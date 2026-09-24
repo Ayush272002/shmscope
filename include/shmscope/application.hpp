@@ -5,13 +5,14 @@
 #include <ftxui/component/event.hpp>
 #include <ftxui/dom/elements.hpp>
 
+#include "launcher.hpp"
+
 namespace shmscope {
 
     class Application {
     public:
         Application();
 
-        // Callbacks capture this, so it must not move.
         Application(const Application&) = delete;
         Application& operator=(const Application&) = delete;
         Application(Application&&) = delete;
@@ -21,10 +22,9 @@ namespace shmscope {
         [[nodiscard]] int run();
 
     private:
-        [[nodiscard]] ftxui::Element render() const;
-        bool onEvent(const ftxui::Event& event);
+        void open(const std::string& name);
 
         ftxui::App terminal_;
-        ftxui::Component root_;
+        Launcher launcher_;
     };
 }  // namespace shmscope
