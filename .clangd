@@ -1,0 +1,6 @@
+Diagnostics:
+  MissingIncludes: Strict
+  UnusedIncludes: Strict
+  Includes:
+    IgnoreHeader:
+      - "shmscope/version\\.hpp"

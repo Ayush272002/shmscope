@@ -1,0 +1,204 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-cpp
+        with:
+          cache-suffix: release
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
+            -DCMAKE_EXE_LINKER_FLAGS="-stdlib=libc++ -lc++abi"
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  # shmscope is macOS first: no /dev/shm, 31 character names, page rounded
+  # sizes. The Linux jobs cannot see any of that, so macOS builds and tests
+  # with the system toolchain.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install CMake 4.2
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: "4.2"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install Conan
+        run: |
+          uv sync --no-dev
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Cache Conan packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.conan2/p
+          key: conan2-${{ runner.os }}-appleclang-release-${{ hashFiles('**/conanfile.py') }}
+          restore-keys: |
+            conan2-${{ runner.os }}-appleclang-release-
+
+      - name: Configure Conan
+        run: |
+          conan profile detect --force
+          sed -i '' 's/compiler.cppstd=gnu17/compiler.cppstd=23/' ~/.conan2/profiles/default
+          conan profile show
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-cpp
+        with:
+          cache-suffix: coverage
+
+      - name: Configure
+        run: |
+          cmake -S . -B build-cov -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_CXX_FLAGS="-stdlib=libc++ -fprofile-instr-generate -fcoverage-mapping" \
+            -DCMAKE_EXE_LINKER_FLAGS="-stdlib=libc++ -lc++abi -fprofile-instr-generate -fcoverage-mapping"
+          cmake --build build-cov
+
+      - name: Test
+        env:
+          LLVM_PROFILE_FILE: ${{ github.workspace }}/build-cov/shmscope-%p.profraw
+        run: ctest --test-dir build-cov --output-on-failure
+
+      - name: Coverage report
+        run: |
+          llvm-profdata-21 merge -sparse build-cov/shmscope-*.profraw \
+            -o build-cov/shmscope.profdata
+          llvm-cov-21 report build-cov/shmscope_tests \
+            -instr-profile=build-cov/shmscope.profdata \
+            -ignore-filename-regex='(tests/|benchmark/|gtest|\.conan2|_deps/)'
+          BRANCH_COVER=$(llvm-cov-21 export build-cov/shmscope_tests \
+            -instr-profile=build-cov/shmscope.profdata \
+            -ignore-filename-regex='(tests/|benchmark/|gtest|\.conan2|_deps/)' \
+            -summary-only | python3 -c "import json,sys; print(json.load(sys.stdin)['data'][0]['totals']['branches']['percent'])")
+          echo "Branch coverage: ${BRANCH_COVER}%"
+          python3 -c "import sys; sys.exit(0 if float('${BRANCH_COVER}') >= 80 else 1)"
+
+  asan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-cpp
+        with:
+          cache-suffix: asan
+
+      - name: Build with ASan and UBSan
+        run: |
+          cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug \
+            -DSHMSCOPE_SANITIZE=address \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
+            -DCMAKE_EXE_LINKER_FLAGS="-stdlib=libc++ -lc++abi"
+          cmake --build build-asan
+
+      - name: Test under ASan and UBSan
+        env:
+          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:detect_stack_use_after_return=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: ctest --test-dir build-asan --output-on-failure
+
+  tsan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-cpp
+        with:
+          cache-suffix: tsan
+
+      - name: Build with TSan and UBSan
+        run: |
+          cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=Debug \
+            -DSHMSCOPE_SANITIZE=thread \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
+            -DCMAKE_EXE_LINKER_FLAGS="-stdlib=libc++ -lc++abi"
+          cmake --build build-tsan
+
+      - name: Test under TSan and UBSan
+        env:
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: ctest --test-dir build-tsan --output-on-failure
+
+  valgrind:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-cpp
+        with:
+          cache-suffix: valgrind
+
+      - name: Install Valgrind
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+
+      - name: Build
+        run: |
+          cmake -S . -B build-valgrind -DCMAKE_BUILD_TYPE=Debug \
+            -DSHMSCOPE_SANITIZE=off \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
+            -DCMAKE_EXE_LINKER_FLAGS="-stdlib=libc++ -lc++abi"
+          cmake --build build-valgrind
+
+      - name: Test
+        run: |
+          valgrind \
+            --error-exitcode=1 \
+            --log-file=valgrind-%p.log \
+            --leak-check=full \
+            --show-leak-kinds=definite,indirect \
+            --errors-for-leak-kinds=definite,indirect \
+            --track-origins=yes \
+            ./build-valgrind/shmscope_tests
+
+      - name: Valgrind reports
+        if: failure()
+        run: |
+          for log in valgrind-*.log; do
+            echo "=== ${log} ==="
+            cat "${log}"
+          done
+
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uvx pre-commit run --all-files --show-diff-on-failure

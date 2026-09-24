@@ -1,0 +1,65 @@
+name: Set up C++ toolchain
+description: Clang 21 with libc++, CMake, uv-managed Conan, and a warm package cache.
+
+inputs:
+  cache-suffix:
+    description: >
+      Distinguishes the Conan package cache per build variant, e.g. "release"
+      or "debug". Conan package IDs differ by build_type, so jobs building
+      different configurations must not share a cache key.
+    required: false
+    default: "default"
+
+runs:
+  using: composite
+  steps:
+    - name: Install LLVM 21 and Clang
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget software-properties-common gnupg python3-pip lsb-release
+
+        wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
+        sudo add-apt-repository "deb https://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-21 main"
+        sudo apt-get update
+
+        sudo apt-get install -y clang-21 llvm-21 libc++-21-dev libc++abi-21-dev
+
+        sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-21 100
+        sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-21 100
+        sudo update-alternatives --set clang /usr/bin/clang-21
+        sudo update-alternatives --set clang++ /usr/bin/clang++-21
+        clang --version
+
+    - name: Install CMake 4.2
+      uses: jwlawson/actions-setup-cmake@v2
+      with:
+        cmake-version: "4.2"
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+
+    - name: Install Conan
+      shell: bash
+      run: |
+        uv sync --no-dev
+        echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+    - name: Cache Conan packages
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.conan2/p
+        key: conan2-${{ runner.os }}-clang21-${{ inputs.cache-suffix }}-${{ hashFiles('**/conanfile.py') }}
+        restore-keys: |
+          conan2-${{ runner.os }}-clang21-${{ inputs.cache-suffix }}-
+
+    - name: Configure Conan
+      shell: bash
+      run: |
+        conan profile detect --force
+        sed -i 's/compiler=gcc/compiler=clang/' ~/.conan2/profiles/default
+        sed -i 's/compiler.version=[0-9.]*/compiler.version=21/' ~/.conan2/profiles/default
+        sed -i 's/compiler.cppstd=gnu17/compiler.cppstd=23/' ~/.conan2/profiles/default
+        sed -i 's/compiler.libcxx=libstdc++11/compiler.libcxx=libc++/' ~/.conan2/profiles/default
+        conan profile show

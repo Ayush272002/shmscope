@@ -1,0 +1,6 @@
+#pragma once
+
+#define SHMSCOPE_VERSION_MAJOR @shmscope_VERSION_MAJOR@
+#define SHMSCOPE_VERSION_MINOR @shmscope_VERSION_MINOR@
+#define SHMSCOPE_VERSION_PATCH @shmscope_VERSION_PATCH@
+#define SHMSCOPE_VERSION "@shmscope_VERSION@"
