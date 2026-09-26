@@ -113,7 +113,7 @@ namespace {
     }
 
     TEST(ShmSource, EmptyObjectIsAnError) {
-        TestSegment segment(0);  // created but never sized
+        TestSegment segment(0);
         ASSERT_TRUE(segment.ready());
 
         auto source = ShmSource::open(segment.name());
@@ -128,7 +128,6 @@ namespace {
         auto source = openOrFail(segment.name());
         ASSERT_NE(source, nullptr);
 
-        // macOS rounds the object up to a whole page, so at least 1000.
         EXPECT_GE(source->poll().bytes.size(), 1000U);
     }
 
@@ -177,7 +176,7 @@ namespace {
         for (int expected = HEAT_MAX - 1; expected >= 0; --expected) {
             EXPECT_EQ(source->poll().heat[7], expected);
         }
-        EXPECT_EQ(source->poll().heat[7], 0);  // stays cold
+        EXPECT_EQ(source->poll().heat[7], 0);
     }
 
     TEST(ShmSource, SequenceCountsPolls) {
@@ -235,8 +234,6 @@ namespace {
     }
 
     TEST(ShmSource, NameAtTheLimitIsNotRejectedForLength) {
-        // Long enough to hit macOS's 31, short enough for Linux's 255: the
-        // open fails because nothing exists, not because of the length.
         const std::string name = "/" + std::string(30, 'n');
 
         auto source = ShmSource::open(name);
@@ -252,9 +249,113 @@ namespace {
         auto source = openOrFail(segment->name());
         ASSERT_NE(source, nullptr);
 
-        segment.reset();  // unmaps and unlinks the name
+        segment.reset();
 
         EXPECT_EQ(source->poll().bytes[0], std::byte{5});
+    }
+
+    TEST(ShmSource, UnreadableObjectIsAnError) {
+        if (::geteuid() == 0) {
+            GTEST_SKIP() << "root ignores permission bits";
+        }
+        const std::string name = std::format("/shmscope.t.{}.ro", ::getpid());
+        const int fd = ::shm_open(name.c_str(), O_CREAT | O_EXCL | O_RDWR, 0);
+        ASSERT_GE(fd, 0);
+        ASSERT_EQ(::ftruncate(fd, 4096), 0);
+
+        auto source = ShmSource::open(name);
+        ::close(fd);
+        ::shm_unlink(name.c_str());
+
+        ASSERT_FALSE(source.has_value());
+        EXPECT_NE(source.error().find(name), std::string::npos);
+        EXPECT_NE(source.error().find("ermission"), std::string::npos);
+    }
+
+    TEST(ShmSource, NameOneOverTheLimitIsRejected) {
+#ifdef __APPLE__
+        constexpr std::size_t LIMIT = 31;
+#else
+        constexpr std::size_t LIMIT = 255;
+#endif
+        const std::string atLimit = "/" + std::string(LIMIT - 1, 'a');
+        const std::string overLimit = "/" + std::string(LIMIT, 'a');
+
+        auto ok = ShmSource::open(atLimit);
+        auto rejected = ShmSource::open(overLimit);
+
+        ASSERT_FALSE(ok.has_value());
+        EXPECT_EQ(ok.error().find("limit"), std::string::npos);
+        ASSERT_FALSE(rejected.has_value());
+        EXPECT_NE(
+            rejected.error().find(std::format("{} characters", LIMIT + 1)),
+            std::string::npos);
+    }
+
+    TEST(ShmSource, SlashIsCountedTowardsTheLimit) {
+#ifdef __APPLE__
+        constexpr std::size_t LIMIT = 31;
+#else
+        constexpr std::size_t LIMIT = 255;
+#endif
+        auto source = ShmSource::open(std::string(LIMIT, 'b'));
+
+        ASSERT_FALSE(source.has_value());
+        EXPECT_NE(source.error().find("limit"), std::string::npos);
+    }
+
+    TEST(ShmSource, EmptyNameIsAnError) {
+        auto source = ShmSource::open("");
+
+        ASSERT_FALSE(source.has_value());
+        EXPECT_FALSE(source.error().empty());
+    }
+
+    TEST(ShmSource, ClosingReleasesTheDescriptor) {
+        TestSegment segment(4096);
+        ASSERT_TRUE(segment.ready());
+
+        for (int i = 0; i < 2000; ++i) {
+            auto source = ShmSource::open(segment.name());
+            ASSERT_TRUE(source.has_value())
+                << "open " << i << ": " << source.error();
+        }
+    }
+
+    TEST(ShmSource, FailedOpensDoNotLeakDescriptors) {
+        TestSegment segment(0);
+        ASSERT_TRUE(segment.ready());
+
+        for (int i = 0; i < 2000; ++i) {
+            ASSERT_FALSE(ShmSource::open(segment.name()).has_value());
+        }
+        TestSegment sized(4096);
+        ASSERT_TRUE(sized.ready());
+        EXPECT_TRUE(ShmSource::open(sized.name()).has_value());
+    }
+
+    TEST(ShmSource, FrameSpansStayValidUntilTheNextPoll) {
+        TestSegment segment(4096);
+        ASSERT_TRUE(segment.ready());
+        auto source = openOrFail(segment.name());
+        ASSERT_NE(source, nullptr);
+
+        segment.write(1, std::byte{9});
+        const auto frame = source->poll();
+        segment.write(1, std::byte{10});
+
+        EXPECT_EQ(frame.bytes[1], std::byte{9});
+        EXPECT_EQ(source->poll().bytes[1], std::byte{10});
+    }
+
+    TEST(ShmSource, HeatAndBytesCoverTheSameRange) {
+        TestSegment segment(5000);
+        ASSERT_TRUE(segment.ready());
+        auto source = openOrFail(segment.name());
+        ASSERT_NE(source, nullptr);
+
+        const auto frame = source->poll();
+        EXPECT_EQ(frame.heat.size(), frame.bytes.size());
     }
 
 }  // namespace

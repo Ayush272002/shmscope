@@ -1,0 +1,677 @@
+#include "shmscope/viewer.hpp"
+
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <format>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+#include <ftxui/component/component_base.hpp>
+#include <ftxui/component/event.hpp>
+#include <ftxui/component/mouse.hpp>
+#include <ftxui/dom/node.hpp>
+#include <ftxui/screen/color.hpp>
+#include <ftxui/screen/screen.hpp>
+#include <ftxui/screen/terminal.hpp>
+#include <gtest/gtest.h>
+
+#include "shmscope/source.hpp"
+
+namespace {
+
+    using shmscope::Frame;
+    using shmscope::HEAT_MAX;
+    using shmscope::Source;
+    using shmscope::Viewer;
+
+    constexpr int HZ = 15;
+    constexpr int SCREEN_WIDTH = 100;
+    constexpr int CHROME_WITH_CLOSED_BAR = 6;
+
+    class FakeSource final : public Source {
+    public:
+        FakeSource(std::string name, std::size_t size, bool* destroyed)
+            : name_(std::move(name)),
+              bytes_(size),
+              heat_(size),
+              destroyed_(destroyed) {
+            for (std::size_t i = 0; i < size; ++i) {
+                bytes_[i] = static_cast<std::byte>(i & 0xff);
+            }
+        }
+
+        ~FakeSource() override {
+            if (destroyed_ != nullptr) {
+                *destroyed_ = true;
+            }
+        }
+
+        FakeSource(const FakeSource&) = delete;
+        FakeSource& operator=(const FakeSource&) = delete;
+        FakeSource(FakeSource&&) = delete;
+        FakeSource& operator=(FakeSource&&) = delete;
+
+        [[nodiscard]] std::string_view name() const noexcept override {
+            return name_;
+        }
+
+        [[nodiscard]] Frame poll() noexcept override {
+            ++polls;
+            return Frame{.bytes = bytes_,
+                         .heat = heat_,
+                         .sequence = static_cast<std::uint64_t>(polls)};
+        }
+
+        int polls = 0;
+        std::vector<std::uint8_t>& heat() { return heat_; }
+
+    private:
+        std::string name_;
+        std::vector<std::byte> bytes_;
+        std::vector<std::uint8_t> heat_;
+        bool* destroyed_;
+    };
+
+    class ViewerTest : public ::testing::Test {
+    protected:
+        FakeSource& attach(std::size_t size, std::string name = "/fake") {
+            auto source = std::make_unique<FakeSource>(std::move(name), size,
+                                                       &destroyed_);
+            FakeSource& fake = *source;
+            viewer_.attach(std::move(source));
+            return fake;
+        }
+
+        bool press(const ftxui::Event& event) {
+            return viewer_.component()->OnEvent(event);
+        }
+
+        void type(std::string_view text) {
+            for (const char c : text) {
+                press(ftxui::Event::Character(c));
+            }
+        }
+
+        void command(std::string_view text) {
+            press(ftxui::Event::Character('/'));
+            type(text);
+            press(ftxui::Event::Return);
+        }
+
+        static ftxui::Event mouse(ftxui::Mouse::Button button) {
+            ftxui::Mouse state;
+            state.button = button;
+            return ftxui::Event::Mouse("", state);
+        }
+
+        static int height() { return ftxui::Terminal::Size().dimy; }
+
+        static std::size_t visibleRows() {
+            return static_cast<std::size_t>(
+                std::max(1, height() - CHROME_WITH_CLOSED_BAR));
+        }
+
+        ftxui::Screen draw() {
+            auto screen = ftxui::Screen(SCREEN_WIDTH, height());
+            ftxui::Render(screen, viewer_.component()->Render());
+            return screen;
+        }
+
+        std::string screen() {
+            const std::string styled = draw().ToString();
+            std::string text;
+            for (std::size_t i = 0; i < styled.size(); ++i) {
+                if (styled[i] == '\x1b') {
+                    i = styled.find_first_of("mABCDHJK", i);
+                    if (i == std::string::npos) break;
+                    continue;
+                }
+                text += styled[i];
+            }
+            return text;
+        }
+
+        bool shows(std::string_view text) {
+            return screen().find(text) != std::string::npos;
+        }
+
+        static std::string rowLabel(std::size_t offset) {
+            return std::format("{:08x}", offset);
+        }
+
+        std::size_t firstRow() {
+            const auto screen = draw();
+            std::string label;
+            for (int x = 3; x < 11; ++x) {
+                label += screen.PixelAt(x, 2).character;
+            }
+            return std::stoul(label, nullptr, 16);
+        }
+
+        ftxui::Color byteColor(std::size_t col) {
+            const int gap = col >= 8 ? 1 : 0;
+            const int x = 13 + static_cast<int>(col * 3) + gap;
+            return draw().PixelAt(x, 2).foreground_color;
+        }
+
+        int closes_ = 0;
+        bool destroyed_ = false;
+        Viewer viewer_{HZ, [this] { ++closes_; }};
+    };
+
+    TEST_F(ViewerTest, AttachPollsOnce) {
+        auto& fake = attach(64);
+        EXPECT_EQ(fake.polls, 1);
+    }
+
+    TEST_F(ViewerTest, TickPolls) {
+        auto& fake = attach(64);
+        viewer_.tick();
+        viewer_.tick();
+        EXPECT_EQ(fake.polls, 3);
+    }
+
+    TEST_F(ViewerTest, TickWithoutSourceIsHarmless) {
+        viewer_.tick();
+        EXPECT_TRUE(shows(" - "));
+        EXPECT_TRUE(shows("0 bytes"));
+    }
+
+    TEST_F(ViewerTest, SpaceFreezesAndResumes) {
+        auto& fake = attach(64);
+
+        EXPECT_TRUE(press(ftxui::Event::Character(' ')));
+        viewer_.tick();
+        EXPECT_EQ(fake.polls, 1);
+        EXPECT_TRUE(shows("frozen"));
+
+        press(ftxui::Event::Character(' '));
+        viewer_.tick();
+        EXPECT_EQ(fake.polls, 2);
+        EXPECT_TRUE(shows("live"));
+    }
+
+    TEST_F(ViewerTest, FreezeCommandToggles) {
+        auto& fake = attach(64);
+
+        command("freeze");
+        viewer_.tick();
+        EXPECT_EQ(fake.polls, 1);
+
+        command("freeze");
+        viewer_.tick();
+        EXPECT_EQ(fake.polls, 2);
+    }
+
+    TEST_F(ViewerTest, DetachReleasesTheSource) {
+        attach(64);
+        viewer_.detach();
+
+        EXPECT_TRUE(destroyed_);
+        EXPECT_TRUE(shows("0 bytes"));
+    }
+
+    TEST_F(ViewerTest, AttachReplacesThePreviousSource) {
+        attach(64, "/first");
+        attach(64, "/second");
+
+        EXPECT_TRUE(destroyed_);
+        EXPECT_TRUE(shows("/second"));
+    }
+
+    TEST_F(ViewerTest, AttachResetsScrollAndFreeze) {
+        attach(4096);
+        press(ftxui::Event::Character('G'));
+        press(ftxui::Event::Character(' '));
+
+        auto& fake = attach(4096);
+        viewer_.tick();
+
+        EXPECT_EQ(firstRow(), 0U);
+        EXPECT_EQ(fake.polls, 2);
+    }
+
+    TEST_F(ViewerTest, TitleShowsNameSizeRateAndState) {
+        attach(1234, "/fh.test");
+
+        EXPECT_TRUE(shows("/fh.test"));
+        EXPECT_TRUE(shows("1234 bytes"));
+        EXPECT_TRUE(shows(std::format("{} Hz", HZ)));
+        EXPECT_TRUE(shows("live"));
+    }
+
+    TEST_F(ViewerTest, FooterWarnsAboutTornReadsAndOffersCommands) {
+        attach(64);
+
+        EXPECT_TRUE(shows("torn mid write"));
+        EXPECT_TRUE(shows("/ for commands"));
+    }
+
+    TEST_F(ViewerTest, RowsShowOffsetAndBytesWithMidRowGap) {
+        attach(64);
+
+        EXPECT_TRUE(shows("00000000  00 01 02 03 04 05 06 07  08 09 0a 0b"));
+        EXPECT_TRUE(shows("00000030  30 31"));
+    }
+
+    TEST_F(ViewerTest, PartialLastRowStopsAtTheEnd) {
+        attach(20);
+
+        EXPECT_TRUE(shows("00000010  10 11 12 13"));
+        EXPECT_FALSE(shows("10 11 12 13 14"));
+        EXPECT_FALSE(shows(rowLabel(0x20)));
+    }
+
+    TEST_F(ViewerTest, EmptySourceDrawsNoRows) {
+        attach(0);
+
+        EXPECT_FALSE(shows(rowLabel(0)));
+        EXPECT_TRUE(shows("0 bytes"));
+    }
+
+    TEST_F(ViewerTest, OnlyVisibleRowsAreDrawn) {
+        attach(1 << 20);
+
+        EXPECT_TRUE(shows(rowLabel((visibleRows() - 1) * 16)));
+        EXPECT_FALSE(shows(rowLabel(visibleRows() * 16)));
+    }
+
+    TEST_F(ViewerTest, HotByteIsYellow) {
+        auto& fake = attach(64);
+        fake.heat()[3] = HEAT_MAX;
+        viewer_.tick();
+
+        EXPECT_EQ(byteColor(3), ftxui::Color::Interpolate(
+                                    1.0F, ftxui::Color::RGB(170, 170, 170),
+                                    ftxui::Color::RGB(255, 200, 0)));
+        EXPECT_NE(byteColor(3), ftxui::Color::RGB(170, 170, 170));
+    }
+
+    TEST_F(ViewerTest, HotZeroByteIsAlsoHighlighted) {
+        auto& fake = attach(64);
+        fake.heat()[0] = HEAT_MAX;
+        viewer_.tick();
+
+        EXPECT_NE(byteColor(0), ftxui::Color::RGB(90, 90, 90));
+    }
+
+    TEST_F(ViewerTest, HeatInTheSecondHalfOfTheRowIsDrawnPastTheGap) {
+        auto& fake = attach(64);
+        fake.heat()[8] = HEAT_MAX;
+        viewer_.tick();
+
+        EXPECT_NE(byteColor(8), ftxui::Color::RGB(170, 170, 170));
+        EXPECT_EQ(byteColor(7), ftxui::Color::RGB(170, 170, 170));
+    }
+
+    TEST_F(ViewerTest, ColdZeroIsDimmerThanColdNonZero) {
+        attach(64);
+
+        EXPECT_EQ(byteColor(0), ftxui::Color::RGB(90, 90, 90));
+        EXPECT_EQ(byteColor(1), ftxui::Color::RGB(170, 170, 170));
+    }
+
+    TEST_F(ViewerTest, FadingByteIsBetweenColdAndHot) {
+        auto& fake = attach(64);
+        fake.heat()[9] = HEAT_MAX / 2;
+        viewer_.tick();
+
+        const auto color = byteColor(9);
+        EXPECT_NE(color, ftxui::Color::RGB(255, 200, 0));
+        EXPECT_NE(color, ftxui::Color::RGB(170, 170, 170));
+    }
+
+    TEST_F(ViewerTest, JAndArrowDownScrollOneRow) {
+        attach(4096);
+        draw();
+
+        EXPECT_TRUE(press(ftxui::Event::Character('j')));
+        EXPECT_EQ(firstRow(), 0x10U);
+        press(ftxui::Event::ArrowDown);
+        EXPECT_EQ(firstRow(), 0x20U);
+    }
+
+    TEST_F(ViewerTest, KAndArrowUpScrollBack) {
+        attach(4096);
+        draw();
+        press(ftxui::Event::Character('j'));
+        press(ftxui::Event::Character('j'));
+
+        press(ftxui::Event::Character('k'));
+        EXPECT_EQ(firstRow(), 0x10U);
+        press(ftxui::Event::ArrowUp);
+        EXPECT_EQ(firstRow(), 0U);
+    }
+
+    TEST_F(ViewerTest, ScrollingUpStopsAtTheTop) {
+        attach(4096);
+        draw();
+        press(ftxui::Event::Character('k'));
+        press(ftxui::Event::PageUp);
+
+        EXPECT_EQ(firstRow(), 0U);
+    }
+
+    TEST_F(ViewerTest, PageDownAndUpMoveByAScreen) {
+        attach(1 << 16);
+        draw();
+
+        press(ftxui::Event::PageDown);
+        EXPECT_EQ(firstRow(), visibleRows() * 16);
+        press(ftxui::Event::PageUp);
+        EXPECT_EQ(firstRow(), 0U);
+    }
+
+    TEST_F(ViewerTest, CapitalGAndEndGoToTheLastScreen) {
+        attach(4096);
+        draw();
+        const auto last = (256 - visibleRows()) * 16;
+
+        press(ftxui::Event::Character('G'));
+        EXPECT_EQ(firstRow(), last);
+        EXPECT_TRUE(shows(rowLabel(0xff0)));
+
+        press(ftxui::Event::Character('g'));
+        press(ftxui::Event::End);
+        EXPECT_EQ(firstRow(), last);
+    }
+
+    TEST_F(ViewerTest, GAndHomeGoToTheTop) {
+        attach(4096);
+        draw();
+        press(ftxui::Event::Character('G'));
+
+        press(ftxui::Event::Character('g'));
+        EXPECT_EQ(firstRow(), 0U);
+
+        press(ftxui::Event::Character('G'));
+        press(ftxui::Event::Home);
+        EXPECT_EQ(firstRow(), 0U);
+    }
+
+    TEST_F(ViewerTest, ScrollingDownStopsAtTheLastScreen) {
+        attach(4096);
+        draw();
+        for (int i = 0; i < 1000; ++i) {
+            press(ftxui::Event::PageDown);
+        }
+
+        EXPECT_EQ(firstRow(), (256 - visibleRows()) * 16);
+    }
+
+    TEST_F(ViewerTest, ObjectSmallerThanTheScreenNeverScrolls) {
+        attach(32);
+        draw();
+        press(ftxui::Event::Character('G'));
+        press(ftxui::Event::PageDown);
+        press(ftxui::Event::Character('j'));
+
+        EXPECT_EQ(firstRow(), 0U);
+    }
+
+    TEST_F(ViewerTest, WheelScrollsThreeRows) {
+        attach(4096);
+        draw();
+
+        EXPECT_TRUE(press(mouse(ftxui::Mouse::WheelDown)));
+        EXPECT_EQ(firstRow(), 0x30U);
+        EXPECT_TRUE(press(mouse(ftxui::Mouse::WheelUp)));
+        EXPECT_EQ(firstRow(), 0U);
+    }
+
+    TEST_F(ViewerTest, WheelUpStopsAtTheTop) {
+        attach(4096);
+        draw();
+        press(mouse(ftxui::Mouse::WheelUp));
+
+        EXPECT_EQ(firstRow(), 0U);
+    }
+
+    TEST_F(ViewerTest, OtherMouseEventsAreNotHandled) {
+        attach(4096);
+
+        EXPECT_FALSE(press(mouse(ftxui::Mouse::Left)));
+        EXPECT_EQ(closes_, 0);
+    }
+
+    TEST_F(ViewerTest, WheelStillScrollsWhileTheBarIsOpen) {
+        attach(4096);
+        draw();
+        press(ftxui::Event::Character('/'));
+
+        press(mouse(ftxui::Mouse::WheelDown));
+        EXPECT_EQ(firstRow(), 0x30U);
+    }
+
+    TEST_F(ViewerTest, QCloses) {
+        attach(64);
+        EXPECT_TRUE(press(ftxui::Event::Character('q')));
+        EXPECT_EQ(closes_, 1);
+    }
+
+    TEST_F(ViewerTest, EscapeCloses) {
+        attach(64);
+        EXPECT_TRUE(press(ftxui::Event::Escape));
+        EXPECT_EQ(closes_, 1);
+    }
+
+    TEST_F(ViewerTest, UnknownKeyIsNotHandled) {
+        attach(64);
+        EXPECT_FALSE(press(ftxui::Event::Character('x')));
+        EXPECT_EQ(closes_, 0);
+    }
+
+    TEST_F(ViewerTest, ScrollKeysNeverClose) {
+        attach(4096);
+        for (const auto& event :
+             {ftxui::Event::Character('G'), ftxui::Event::Character('g'),
+              ftxui::Event::Character('j'), ftxui::Event::Character('k'),
+              ftxui::Event::ArrowDown, ftxui::Event::ArrowUp,
+              ftxui::Event::PageDown, ftxui::Event::PageUp, ftxui::Event::Home,
+              ftxui::Event::End, ftxui::Event::Character(' ')}) {
+            press(event);
+        }
+        EXPECT_EQ(closes_, 0);
+    }
+
+    TEST_F(ViewerTest, EscapeWithTheBarOpenClosesOnlyTheBar) {
+        attach(64);
+        press(ftxui::Event::Character('/'));
+
+        press(ftxui::Event::Escape);
+        EXPECT_EQ(closes_, 0);
+
+        press(ftxui::Event::Escape);
+        EXPECT_EQ(closes_, 1);
+    }
+
+    TEST_F(ViewerTest, KeysTypedIntoTheBarDoNotReachTheViewer) {
+        attach(4096);
+        draw();
+        press(ftxui::Event::Character('/'));
+        type("qjG ");
+
+        EXPECT_EQ(closes_, 0);
+        EXPECT_EQ(firstRow(), 0U);
+        EXPECT_TRUE(shows("live"));
+    }
+
+    TEST_F(ViewerTest, CloseCommandCloses) {
+        attach(64);
+        command("close");
+        EXPECT_EQ(closes_, 1);
+    }
+
+    TEST_F(ViewerTest, BarSuggestionsShrinkTheHexPane) {
+        attach(1 << 20);
+        press(ftxui::Event::Character('/'));
+
+        EXPECT_FALSE(shows(rowLabel((visibleRows() - 1) * 16)));
+        EXPECT_TRUE(shows(rowLabel((visibleRows() - 6) * 16)));
+    }
+
+    TEST_F(ViewerTest, ListsAllCommands) {
+        attach(64);
+        press(ftxui::Event::Character('/'));
+
+        for (const auto* name :
+             {"/jump", "/freeze", "/top", "/bottom", "/close"}) {
+            EXPECT_TRUE(shows(name)) << name;
+        }
+    }
+
+    TEST_F(ViewerTest, JumpScrollsToTheRowHoldingTheOffset) {
+        attach(1 << 16);
+        draw();
+
+        command("jump 1234");
+        EXPECT_EQ(firstRow(), 0x1230U);
+    }
+
+    TEST_F(ViewerTest, JumpAcceptsHexPrefixAndUppercase) {
+        attach(1 << 16);
+        draw();
+
+        command("jump 0x100");
+        EXPECT_EQ(firstRow(), 0x100U);
+        command("jump 0XAB0");
+        EXPECT_EQ(firstRow(), 0xab0U);
+        command("jump FF0");
+        EXPECT_EQ(firstRow(), 0xff0U);
+    }
+
+    TEST_F(ViewerTest, JumpNearTheEndStopsAtTheLastScreen) {
+        attach(4096);
+        draw();
+
+        command("jump ff0");
+        EXPECT_EQ(firstRow(), (256 - visibleRows()) * 16);
+    }
+
+    TEST_F(ViewerTest, JumpToTheLastByteIsAllowed) {
+        attach(4096);
+        draw();
+
+        command("jump fff");
+        EXPECT_FALSE(shows("past the end"));
+    }
+
+    TEST_F(ViewerTest, JumpPastTheEndIsAnError) {
+        attach(4096);
+        draw();
+
+        command("jump 1000");
+        EXPECT_TRUE(shows("0x1000 is past the end (0x1000 bytes)"));
+        EXPECT_EQ(firstRow(), 0U);
+    }
+
+    TEST_F(ViewerTest, JumpRejectsNonHex) {
+        attach(4096);
+
+        command("jump xyz");
+        EXPECT_TRUE(shows("/jump needs a hex offset, got 'xyz'"));
+    }
+
+    TEST_F(ViewerTest, JumpRejectsTrailingJunk) {
+        attach(4096);
+
+        command("jump 10g");
+        EXPECT_TRUE(shows("got '10g'"));
+    }
+
+    TEST_F(ViewerTest, JumpRejectsABarePrefix) {
+        attach(4096);
+
+        command("jump 0x");
+        EXPECT_TRUE(shows("got '0x'"));
+    }
+
+    TEST_F(ViewerTest, JumpWithoutAnOffsetIsAnError) {
+        attach(4096);
+
+        command("jump");
+        EXPECT_TRUE(shows("/jump needs a hex offset, got ''"));
+    }
+
+    TEST_F(ViewerTest, JumpRejectsAnOverflowingOffset) {
+        attach(4096);
+
+        command("jump ffffffffffffffffff");
+        EXPECT_TRUE(shows("needs a hex offset"));
+    }
+
+    TEST_F(ViewerTest, JumpWithNoSourceIsPastTheEnd) {
+        command("jump 0");
+        EXPECT_TRUE(shows("past the end"));
+    }
+
+    TEST_F(ViewerTest, WheelDoesNothingOnASmallObject) {
+        attach(32);
+        draw();
+        press(mouse(ftxui::Mouse::WheelDown));
+
+        EXPECT_EQ(firstRow(), 0U);
+    }
+
+    TEST_F(ViewerTest, ScrollingWorksWhileFrozen) {
+        auto& fake = attach(4096);
+        draw();
+        press(ftxui::Event::Character(' '));
+
+        press(ftxui::Event::PageDown);
+        command("jump 800");
+
+        EXPECT_EQ(firstRow(), 0x800U);
+        EXPECT_EQ(fake.polls, 1);
+    }
+
+    TEST_F(ViewerTest, ExactlyOneRowObjectHasNoEmptySecondRow) {
+        attach(16);
+
+        EXPECT_TRUE(shows("0f"));
+        EXPECT_FALSE(shows(rowLabel(0x10)));
+    }
+
+    TEST_F(ViewerTest, OffsetsBeyondThirtyTwoBitsKeepAllDigits) {
+        attach(1 << 16);
+        draw();
+        command("jump fff0");
+
+        EXPECT_TRUE(shows("0000fff0"));
+    }
+
+    TEST_F(ViewerTest, ErrorFromACommandShrinksThePaneByOneRow) {
+        attach(1 << 20);
+        command("jump xyz");
+
+        EXPECT_FALSE(shows(rowLabel((visibleRows() - 1) * 16)));
+        EXPECT_TRUE(shows(rowLabel((visibleRows() - 2) * 16)));
+    }
+
+    TEST_F(ViewerTest, DetachWhileFrozenThenAttachIsLive) {
+        attach(64);
+        press(ftxui::Event::Character(' '));
+        viewer_.detach();
+
+        auto& fake = attach(64);
+        viewer_.tick();
+
+        EXPECT_EQ(fake.polls, 2);
+        EXPECT_TRUE(shows("live"));
+    }
+
+    TEST_F(ViewerTest, TopAndBottomCommands) {
+        attach(4096);
+        draw();
+
+        command("bottom");
+        EXPECT_EQ(firstRow(), (256 - visibleRows()) * 16);
+        command("top");
+        EXPECT_EQ(firstRow(), 0U);
+    }
+
+}  // namespace
