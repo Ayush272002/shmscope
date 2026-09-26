@@ -1,5 +1,10 @@
+#include "shmscope/application.hpp"
+
+#include <format>
+
 #include <ftxui/component/component.hpp>
-#include <shmscope/application.hpp>
+
+#include "shmscope/shm_source.hpp"
 
 namespace shmscope {
 
@@ -14,7 +19,15 @@ namespace shmscope {
     }
 
     void Application::open(const std::string& name) {
-        launcher_.setError(std::format("cannot open {} yet: no viewer", name));
+        auto source = ShmSource::open(name);
+        if (!source) {
+            launcher_.setError(source.error());
+            return;
+        }
+
+        const auto frame = (*source)->poll();
+        launcher_.setError(std::format("{}: {} bytes mapped, viewer next",
+                                       (*source)->name(), frame.bytes.size()));
     }
 
 }  // namespace shmscope

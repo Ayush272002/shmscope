@@ -49,6 +49,7 @@ target_include_directories(shmscope_core PUBLIC
 find_package(ftxui CONFIG REQUIRED)
 find_package(yaml-cpp CONFIG REQUIRED)
 find_package(CLI11 CONFIG REQUIRED)
+find_package(highway CONFIG REQUIRED)
 
 target_link_libraries(shmscope_core PUBLIC
         ftxui::screen
@@ -56,10 +57,13 @@ target_link_libraries(shmscope_core PUBLIC
         ftxui::component
 )
 target_link_libraries(shmscope_core PRIVATE
+        highway::highway
         shmscope::warnings
         shmscope::sanitizers
         yaml-cpp::yaml-cpp
 )
+
+target_include_directories(shmscope_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 add_executable(shmscope main.cpp)
 target_link_libraries(shmscope PRIVATE

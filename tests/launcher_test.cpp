@@ -1,12 +1,13 @@
-#include <gtest/gtest.h>
+#include "shmscope/launcher.hpp"
+
+#include <string>
+#include <vector>
 
 #include <ftxui/component/component_base.hpp>
 #include <ftxui/component/event.hpp>
 #include <ftxui/dom/node.hpp>
 #include <ftxui/screen/screen.hpp>
-#include <shmscope/launcher.hpp>
-#include <string>
-#include <vector>
+#include <gtest/gtest.h>
 
 namespace {
 

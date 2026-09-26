@@ -1,4 +1,4 @@
-#include <shmscope/application.hpp>
+#include "shmscope/application.hpp"
 
 int main() {
     shmscope::Application app;

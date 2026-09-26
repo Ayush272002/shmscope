@@ -1,9 +1,12 @@
+#include "shmscope/launcher.hpp"
+
+#include <utility>
+
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/component_options.hpp>
 #include <ftxui/screen/color.hpp>
-#include <shmscope/launcher.hpp>
-#include <shmscope/version.hpp>
-#include <utility>
+
+#include "shmscope/version.hpp"
 
 namespace shmscope {
 
