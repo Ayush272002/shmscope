@@ -5,15 +5,20 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include <algorithm>
 #include <cerrno>
+#include <concepts>
+#include <cstddef>
 #include <cstring>
+#include <expected>
 #include <format>
 #include <memory>
+#include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 
 #include "shmscope/diff.hpp"
+#include "shmscope/source.hpp"
 
 namespace shmscope {
 

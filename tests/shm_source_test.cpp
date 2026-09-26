@@ -6,11 +6,11 @@
 
 #include <atomic>
 #include <cstddef>
-#include <cstdint>
 #include <format>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include <gtest/gtest.h>
 
@@ -21,6 +21,12 @@ namespace {
     using shmscope::HEAT_MAX;
     using shmscope::ShmSource;
     using shmscope::Source;
+
+#ifdef __APPLE__
+    constexpr std::size_t NAME_LIMIT = 31;
+#else
+    constexpr std::size_t NAME_LIMIT = 255;
+#endif
 
     class TestSegment {
     public:
@@ -273,13 +279,8 @@ namespace {
     }
 
     TEST(ShmSource, NameOneOverTheLimitIsRejected) {
-#ifdef __APPLE__
-        constexpr std::size_t LIMIT = 31;
-#else
-        constexpr std::size_t LIMIT = 255;
-#endif
-        const std::string atLimit = "/" + std::string(LIMIT - 1, 'a');
-        const std::string overLimit = "/" + std::string(LIMIT, 'a');
+        const std::string atLimit = "/" + std::string(NAME_LIMIT - 1, 'a');
+        const std::string overLimit = "/" + std::string(NAME_LIMIT, 'a');
 
         auto ok = ShmSource::open(atLimit);
         auto rejected = ShmSource::open(overLimit);
@@ -288,17 +289,12 @@ namespace {
         EXPECT_EQ(ok.error().find("limit"), std::string::npos);
         ASSERT_FALSE(rejected.has_value());
         EXPECT_NE(
-            rejected.error().find(std::format("{} characters", LIMIT + 1)),
+            rejected.error().find(std::format("{} characters", NAME_LIMIT + 1)),
             std::string::npos);
     }
 
     TEST(ShmSource, SlashIsCountedTowardsTheLimit) {
-#ifdef __APPLE__
-        constexpr std::size_t LIMIT = 31;
-#else
-        constexpr std::size_t LIMIT = 255;
-#endif
-        auto source = ShmSource::open(std::string(LIMIT, 'b'));
+        auto source = ShmSource::open(std::string(NAME_LIMIT, 'b'));
 
         ASSERT_FALSE(source.has_value());
         EXPECT_NE(source.error().find("limit"), std::string::npos);
@@ -356,6 +352,55 @@ namespace {
 
         const auto frame = source->poll();
         EXPECT_EQ(frame.heat.size(), frame.bytes.size());
+    }
+
+    TEST(ShmSource, WriteToTheLastByteIsSeen) {
+        TestSegment segment(4096);
+        ASSERT_TRUE(segment.ready());
+        auto source = openOrFail(segment.name());
+        ASSERT_NE(source, nullptr);
+
+        segment.write(4095, std::byte{0x5a});
+        const auto frame = source->poll();
+
+        EXPECT_EQ(frame.bytes[4095], std::byte{0x5a});
+        EXPECT_EQ(frame.heat[4095], HEAT_MAX);
+        EXPECT_EQ(frame.heat[4094], 0);
+    }
+
+    TEST(ShmSource, WritesBeforeOpeningAreNotHot) {
+        TestSegment segment(4096);
+        ASSERT_TRUE(segment.ready());
+        segment.write(10, std::byte{1});
+
+        auto source = openOrFail(segment.name());
+        ASSERT_NE(source, nullptr);
+        const auto frame = source->poll();
+
+        EXPECT_EQ(frame.bytes[10], std::byte{1});
+        EXPECT_EQ(frame.heat[10], 0);
+    }
+
+    TEST(ShmSource, ScatteredWritesAreEachHot) {
+        TestSegment segment(4096);
+        ASSERT_TRUE(segment.ready());
+        auto source = openOrFail(segment.name());
+        ASSERT_NE(source, nullptr);
+
+        for (std::size_t at = 0; at < 4096; at += 97) {
+            segment.write(at, std::byte{0xff});
+        }
+        const auto frame = source->poll();
+
+        for (std::size_t at = 0; at < 4096; ++at) {
+            EXPECT_EQ(frame.heat[at], at % 97 == 0 ? HEAT_MAX : 0) << at;
+        }
+    }
+
+    TEST(ShmSource, NameWithoutASlashIsReportedWithIt) {
+        auto source = ShmSource::open("shmscope.does.not.exist");
+        ASSERT_FALSE(source.has_value());
+        EXPECT_EQ(source.error().rfind("/shmscope.does.not.exist:", 0), 0U);
     }
 
 }  // namespace
