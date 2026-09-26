@@ -4,6 +4,7 @@
 #include <condition_variable>
 #include <cstdio>
 #include <mutex>
+#include <ostream>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -22,21 +23,34 @@ namespace shmscope {
         constexpr std::string_view ALTERNATE_SCROLL_ON = "\x1b[?1007h";
         constexpr std::string_view ALTERNATE_SCROLL_OFF = "\x1b[?1007l";
 
-        void send(std::string_view sequence) {
+        void send(const std::string_view sequence) {
             std::fwrite(sequence.data(), 1, sequence.size(), stdout);
             std::fflush(stdout);
         }
 
     }  // namespace
 
-    Application::Application()
-        : terminal_(ftxui::App::Fullscreen()),
-          launcher_([this](const std::string& name) { open(name); },
-                    [this] { terminal_.Exit(); }),
-          viewer_(REFRESH_HZ, [this] { close(); }) {}
+    Application::Application(Options options)
+        : options_(std::move(options)),
+          terminal_(ftxui::App::Fullscreen()),
+          launcher_(
+              [this](const std::string& name) {
+                  if (auto error = open(name)) {
+                      launcher_.setError(std::move(*error));
+                  }
+              },
+              [this] { terminal_.Exit(); }, options_.hz),
+          viewer_(options_.hz, [this] { close(); }) {}
 
     int Application::run() {
-        auto root =
+        if (options_.name) {
+            if (auto error = open(*options_.name)) {
+                std::println(stderr, "shmscope: {}", *error);
+                return 1;
+            }
+        }
+
+        const auto root =
             ftxui::Container::Tab({launcher_.component(), viewer_.component()},
                                   &active_) |
             ftxui::CatchEvent([this](const ftxui::Event& event) {
@@ -44,16 +58,18 @@ namespace shmscope {
                     terminal_.Exit();
                     return true;
                 }
-                if (event != ftxui::Event::Custom) {
-                    return false;
-                }
-                viewer_.tick();
+
+                if (event != ftxui::Event::Custom) return false;
+                if (active_ == LAUNCHER)
+                    launcher_.tick();
+                else
+                    viewer_.tick();
                 return true;
             });
 
         std::jthread ticker([this](const std::stop_token& stop) {
-            constexpr auto period =
-                std::chrono::microseconds(1'000'000 / REFRESH_HZ);
+            const auto period =
+                std::chrono::microseconds(1'000'000 / options_.hz);
             std::mutex mutex;
             std::condition_variable_any wake;
             std::unique_lock lock(mutex);
@@ -80,15 +96,15 @@ namespace shmscope {
         return 0;
     }
 
-    void Application::open(const std::string& name) {
+    std::optional<std::string> Application::open(const std::string& name) {
         auto source = ShmSource::open(name);
         if (!source) {
-            launcher_.setError(source.error());
-            return;
+            return std::move(source.error());
         }
 
         viewer_.attach(std::move(*source));
         active_ = VIEWER;
+        return std::nullopt;
     }
 
     void Application::close() {
