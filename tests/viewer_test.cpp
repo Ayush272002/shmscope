@@ -195,7 +195,7 @@ namespace {
         EXPECT_TRUE(shows("live"));
     }
 
-    TEST_F(ViewerTest, FreezeCommandToggles) {
+    TEST_F(ViewerTest, FreezeAndUnfreezeCommands) {
         auto& fake = attach(64);
 
         command("freeze");
@@ -204,7 +204,28 @@ namespace {
 
         command("freeze");
         viewer_.tick();
+        EXPECT_EQ(fake.polls, 1);
+        EXPECT_TRUE(shows("unknown command /freeze"));
+
+        press(ftxui::Event::Escape);
+        command("unfreeze");
+        viewer_.tick();
         EXPECT_EQ(fake.polls, 2);
+    }
+
+    TEST_F(ViewerTest, FollowMovesToTheFreshlyWrittenRegion) {
+        auto& fake = attach(64 * 1024);
+        command("follow");
+        EXPECT_TRUE(shows("following"));
+
+        constexpr std::size_t writeAt = 0x9000;
+        std::fill_n(fake.heat().begin() + writeAt, 64, HEAT_MAX);
+        viewer_.tick();
+        EXPECT_TRUE(shows(std::format("{:08x}", writeAt)));
+        EXPECT_FALSE(shows("00000000  "));
+
+        press(ftxui::Event::ArrowUp);
+        EXPECT_FALSE(shows("following"));
     }
 
     TEST_F(ViewerTest, DetachReleasesTheSource) {
@@ -225,7 +246,7 @@ namespace {
 
     TEST_F(ViewerTest, AttachResetsScrollAndFreeze) {
         attach(4096);
-        press(ftxui::Event::Character('G'));
+        press(ftxui::Event::End);
         press(ftxui::Event::Character(' '));
 
         auto& fake = attach(4096);
@@ -247,10 +268,9 @@ namespace {
     TEST_F(ViewerTest, FooterWarnsAboutTornReadsAndOffersCommands) {
         attach(64);
 
-        EXPECT_TRUE(shows("torn mid write"));
+        EXPECT_TRUE(shows("values may tear mid write"));
         EXPECT_TRUE(shows("/ for commands"));
     }
-
     TEST_F(ViewerTest, RowsShowOffsetAndBytesWithMidRowGap) {
         attach(64);
 
@@ -325,32 +345,43 @@ namespace {
         EXPECT_NE(color, ftxui::Color::RGB(170, 170, 170));
     }
 
-    TEST_F(ViewerTest, JAndArrowDownScrollOneRow) {
+    TEST_F(ViewerTest, ArrowDownScrollsOneRow) {
         attach(4096);
         draw();
 
-        EXPECT_TRUE(press(ftxui::Event::Character('j')));
+        EXPECT_TRUE(press(ftxui::Event::ArrowDown));
         EXPECT_EQ(firstRow(), 0x10U);
         press(ftxui::Event::ArrowDown);
         EXPECT_EQ(firstRow(), 0x20U);
     }
 
-    TEST_F(ViewerTest, KAndArrowUpScrollBack) {
+    TEST_F(ViewerTest, ArrowUpScrollsBack) {
         attach(4096);
         draw();
-        press(ftxui::Event::Character('j'));
-        press(ftxui::Event::Character('j'));
+        press(ftxui::Event::ArrowDown);
+        press(ftxui::Event::ArrowDown);
 
-        press(ftxui::Event::Character('k'));
+        press(ftxui::Event::ArrowUp);
         EXPECT_EQ(firstRow(), 0x10U);
         press(ftxui::Event::ArrowUp);
         EXPECT_EQ(firstRow(), 0U);
     }
 
+    TEST_F(ViewerTest, VimKeysAreNotShortcuts) {
+        attach(4096);
+        draw();
+
+        for (const char key : {'j', 'k', 'g', 'G'}) {
+            EXPECT_FALSE(press(ftxui::Event::Character(key))) << key;
+        }
+        EXPECT_EQ(firstRow(), 0U);
+        EXPECT_EQ(closes_, 0);
+    }
+
     TEST_F(ViewerTest, ScrollingUpStopsAtTheTop) {
         attach(4096);
         draw();
-        press(ftxui::Event::Character('k'));
+        press(ftxui::Event::ArrowUp);
         press(ftxui::Event::PageUp);
 
         EXPECT_EQ(firstRow(), 0U);
@@ -366,29 +397,20 @@ namespace {
         EXPECT_EQ(firstRow(), 0U);
     }
 
-    TEST_F(ViewerTest, CapitalGAndEndGoToTheLastScreen) {
+    TEST_F(ViewerTest, EndGoesToTheLastScreen) {
         attach(4096);
         draw();
-        const auto last = (256 - visibleRows()) * 16;
 
-        press(ftxui::Event::Character('G'));
-        EXPECT_EQ(firstRow(), last);
-        EXPECT_TRUE(shows(rowLabel(0xff0)));
-
-        press(ftxui::Event::Character('g'));
         press(ftxui::Event::End);
-        EXPECT_EQ(firstRow(), last);
+        EXPECT_EQ(firstRow(), (256 - visibleRows()) * 16);
+        EXPECT_TRUE(shows(rowLabel(0xff0)));
     }
 
-    TEST_F(ViewerTest, GAndHomeGoToTheTop) {
+    TEST_F(ViewerTest, HomeGoesToTheTop) {
         attach(4096);
         draw();
-        press(ftxui::Event::Character('G'));
+        press(ftxui::Event::End);
 
-        press(ftxui::Event::Character('g'));
-        EXPECT_EQ(firstRow(), 0U);
-
-        press(ftxui::Event::Character('G'));
         press(ftxui::Event::Home);
         EXPECT_EQ(firstRow(), 0U);
     }
@@ -406,45 +428,11 @@ namespace {
     TEST_F(ViewerTest, ObjectSmallerThanTheScreenNeverScrolls) {
         attach(32);
         draw();
-        press(ftxui::Event::Character('G'));
+        press(ftxui::Event::End);
         press(ftxui::Event::PageDown);
-        press(ftxui::Event::Character('j'));
+        press(ftxui::Event::ArrowDown);
 
         EXPECT_EQ(firstRow(), 0U);
-    }
-
-    TEST_F(ViewerTest, WheelScrollsThreeRows) {
-        attach(4096);
-        draw();
-
-        EXPECT_TRUE(press(mouse(ftxui::Mouse::WheelDown)));
-        EXPECT_EQ(firstRow(), 0x30U);
-        EXPECT_TRUE(press(mouse(ftxui::Mouse::WheelUp)));
-        EXPECT_EQ(firstRow(), 0U);
-    }
-
-    TEST_F(ViewerTest, WheelUpStopsAtTheTop) {
-        attach(4096);
-        draw();
-        press(mouse(ftxui::Mouse::WheelUp));
-
-        EXPECT_EQ(firstRow(), 0U);
-    }
-
-    TEST_F(ViewerTest, OtherMouseEventsAreNotHandled) {
-        attach(4096);
-
-        EXPECT_FALSE(press(mouse(ftxui::Mouse::Left)));
-        EXPECT_EQ(closes_, 0);
-    }
-
-    TEST_F(ViewerTest, WheelStillScrollsWhileTheBarIsOpen) {
-        attach(4096);
-        draw();
-        press(ftxui::Event::Character('/'));
-
-        press(mouse(ftxui::Mouse::WheelDown));
-        EXPECT_EQ(firstRow(), 0x30U);
     }
 
     TEST_F(ViewerTest, QCloses) {
@@ -468,9 +456,7 @@ namespace {
     TEST_F(ViewerTest, ScrollKeysNeverClose) {
         attach(4096);
         for (const auto& event :
-             {ftxui::Event::Character('G'), ftxui::Event::Character('g'),
-              ftxui::Event::Character('j'), ftxui::Event::Character('k'),
-              ftxui::Event::ArrowDown, ftxui::Event::ArrowUp,
+             {ftxui::Event::ArrowDown, ftxui::Event::ArrowUp,
               ftxui::Event::PageDown, ftxui::Event::PageUp, ftxui::Event::Home,
               ftxui::Event::End, ftxui::Event::Character(' ')}) {
             press(event);
@@ -510,8 +496,8 @@ namespace {
         attach(1 << 20);
         press(ftxui::Event::Character('/'));
 
-        EXPECT_FALSE(shows(rowLabel((visibleRows() - 1) * 16)));
-        EXPECT_TRUE(shows(rowLabel((visibleRows() - 6) * 16)));
+        EXPECT_FALSE(shows(rowLabel((visibleRows() - 7) * 16)));
+        EXPECT_TRUE(shows(rowLabel((visibleRows() - 8) * 16)));
     }
 
     TEST_F(ViewerTest, ListsAllCommands) {
@@ -590,11 +576,19 @@ namespace {
         EXPECT_TRUE(shows("got '0x'"));
     }
 
-    TEST_F(ViewerTest, JumpWithoutAnOffsetIsAnError) {
+    TEST_F(ViewerTest, JumpWithoutAnOffsetWaitsForOne) {
         attach(4096);
 
         command("jump");
-        EXPECT_TRUE(shows("/jump needs a hex offset, got ''"));
+        EXPECT_TRUE(shows("› /jump "));
+        EXPECT_FALSE(shows("needs a hex offset"));
+    }
+
+    TEST_F(ViewerTest, JumpWithABlankOffsetIsAnError) {
+        attach(4096);
+
+        command("jump zz");
+        EXPECT_TRUE(shows("/jump needs a hex offset, got 'zz'"));
     }
 
     TEST_F(ViewerTest, JumpRejectsAnOverflowingOffset) {
@@ -607,14 +601,6 @@ namespace {
     TEST_F(ViewerTest, JumpWithNoSourceIsPastTheEnd) {
         command("jump 0");
         EXPECT_TRUE(shows("past the end"));
-    }
-
-    TEST_F(ViewerTest, WheelDoesNothingOnASmallObject) {
-        attach(32);
-        draw();
-        press(mouse(ftxui::Mouse::WheelDown));
-
-        EXPECT_EQ(firstRow(), 0U);
     }
 
     TEST_F(ViewerTest, ScrollingWorksWhileFrozen) {
@@ -672,6 +658,303 @@ namespace {
         EXPECT_EQ(firstRow(), (256 - visibleRows()) * 16);
         command("top");
         EXPECT_EQ(firstRow(), 0U);
+    }
+
+    TEST_F(ViewerTest, LiveShowsOnlyChangedRowsWithGapsFolded) {
+        auto& fake = attach(64 * 1024);
+        fake.heat()[0x85] = HEAT_MAX;
+        fake.heat()[0x9003] = 1;
+        viewer_.tick();
+
+        command("live");
+        EXPECT_TRUE(shows("changes only"));
+        EXPECT_TRUE(shows(rowLabel(0x80)));
+        EXPECT_TRUE(shows(rowLabel(0x9000)));
+        EXPECT_FALSE(shows(rowLabel(0x90)));
+        EXPECT_TRUE(shows("⋯ 0x80 bytes unchanged"));
+        EXPECT_TRUE(shows("⋯ 0x8f70 bytes unchanged"));
+    }
+
+    TEST_F(ViewerTest, LiveKeepsARegionWholeAcrossShortQuietStretches) {
+        auto& fake = attach(4096);
+        fake.heat()[0x100] = HEAT_MAX;
+        fake.heat()[0x130] = HEAT_MAX;
+        viewer_.tick();
+
+        command("live");
+        EXPECT_TRUE(shows(rowLabel(0x110)));
+        EXPECT_TRUE(shows(rowLabel(0x120)));
+        EXPECT_FALSE(shows("⋯ 0x20 bytes unchanged"));
+    }
+
+    TEST_F(ViewerTest, LiveFoldsTheTailOfALongRegion) {
+        auto& fake = attach(4096);
+        std::fill_n(fake.heat().begin() + 0x200, 48 * 16, HEAT_MAX);
+        viewer_.tick();
+
+        command("live");
+        const std::size_t shown = visibleRows() - 2;
+        EXPECT_TRUE(shows(rowLabel(0x200 + ((shown - 1) * 16))));
+        EXPECT_FALSE(shows(rowLabel(0x200 + (shown * 16))));
+        EXPECT_TRUE(shows(std::format("⋯ {} more rows", 48 - shown)));
+    }
+
+    TEST_F(ViewerTest, LiveKeepsTheMinimumPerRegionWhenCrowded) {
+        auto& fake = attach(64 * 1024);
+        for (std::ptrdiff_t region = 1; region <= 8; ++region) {
+            std::fill_n(fake.heat().begin() + (0x1000 * region), 48 * 16,
+                        HEAT_MAX);
+        }
+        viewer_.tick();
+
+        command("live");
+        EXPECT_TRUE(shows(rowLabel(0x1050)));
+        EXPECT_FALSE(shows(rowLabel(0x1060)));
+        EXPECT_TRUE(shows("⋯ 42 more rows"));
+    }
+
+    TEST_F(ViewerTest, LiveWithNothingChangingSaysSo) {
+        attach(4096);
+        command("live");
+        EXPECT_TRUE(shows("nothing is changing"));
+    }
+
+    TEST_F(ViewerTest, LiveAndHexSwapInTheCommandList) {
+        attach(4096);
+        command("live");
+        press(ftxui::Event::Character('/'));
+        EXPECT_TRUE(shows("/hex"));
+        EXPECT_FALSE(shows("/live"));
+        press(ftxui::Event::Escape);
+
+        command("hex");
+        EXPECT_FALSE(shows("changes only"));
+    }
+
+    TEST_F(ViewerTest, JumpAndFollowLeaveLive) {
+        attach(64 * 1024);
+        command("live");
+        command("jump 4000");
+        EXPECT_FALSE(shows("changes only"));
+        EXPECT_EQ(firstRow(), 0x4000U);
+
+        command("live");
+        command("follow");
+        EXPECT_FALSE(shows("changes only"));
+        EXPECT_TRUE(shows("following"));
+    }
+
+    TEST_F(ViewerTest, FollowStaysOnTheRecordWhileTheHeaderAlsoTicks) {
+        auto& fake = attach(64 * 1024);
+        command("follow");
+        std::fill_n(fake.heat().begin() + 0x9000, 64, HEAT_MAX);
+        viewer_.tick();
+        ASSERT_TRUE(shows(rowLabel(0x9000)));
+
+        std::ranges::fill(fake.heat(), 0);
+        std::fill_n(fake.heat().begin() + 0x80, 5, HEAT_MAX);
+        std::fill_n(fake.heat().begin() + 0x9040, 8, HEAT_MAX);
+        viewer_.tick();
+        EXPECT_TRUE(shows(rowLabel(0x9040)));
+        EXPECT_FALSE(shows(rowLabel(0x80)));
+    }
+
+    TEST_F(ViewerTest, FollowMovesOnWhenTheTrackedRegionGoesQuiet) {
+        auto& fake = attach(64 * 1024);
+        command("follow");
+        std::fill_n(fake.heat().begin() + 0x9000, 64, HEAT_MAX);
+        viewer_.tick();
+
+        std::ranges::fill(fake.heat(), 0);
+        std::fill_n(fake.heat().begin() + 0xc000, 16, HEAT_MAX);
+        viewer_.tick();
+        EXPECT_TRUE(shows(rowLabel(0xc000)));
+        EXPECT_FALSE(shows(rowLabel(0x9000)));
+    }
+
+    TEST_F(ViewerTest, FollowHoldsStillWhenNothingIsWritten) {
+        auto& fake = attach(64 * 1024);
+        command("follow");
+        std::fill_n(fake.heat().begin() + 0x9000, 64, HEAT_MAX);
+        viewer_.tick();
+
+        std::ranges::fill(fake.heat(), 0);
+        viewer_.tick();
+        EXPECT_TRUE(shows(rowLabel(0x9000)));
+        EXPECT_TRUE(shows("following"));
+    }
+
+    TEST_F(ViewerTest, FollowIgnoresBytesThatAreOnlyFading) {
+        auto& fake = attach(64 * 1024);
+        command("follow");
+        std::fill_n(fake.heat().begin() + 0x9000, 64, HEAT_MAX - 1);
+        viewer_.tick();
+        EXPECT_EQ(firstRow(), 0U);
+    }
+
+    TEST_F(ViewerTest, FollowPausesWhileFrozen) {
+        auto& fake = attach(64 * 1024);
+        command("follow");
+        command("freeze");
+        std::fill_n(fake.heat().begin() + 0x9000, 64, HEAT_MAX);
+        viewer_.tick();
+        EXPECT_EQ(firstRow(), 0U);
+
+        command("unfreeze");
+        viewer_.tick();
+        EXPECT_TRUE(shows(rowLabel(0x9000)));
+    }
+
+    TEST_F(ViewerTest, FollowPlacesTheWriteAQuarterDownTheScreen) {
+        auto& fake = attach(64 * 1024);
+        draw();
+        command("follow");
+        std::fill_n(fake.heat().begin() + 0x9000, 16, HEAT_MAX);
+        viewer_.tick();
+        EXPECT_EQ(firstRow(), 0x9000 - ((visibleRows() / 4) * 16));
+    }
+
+    TEST_F(ViewerTest, FKeyTogglesFollowAndLeavesLive) {
+        attach(4096);
+        command("live");
+        press(ftxui::Event::Character('f'));
+        EXPECT_TRUE(shows("following"));
+        EXPECT_FALSE(shows("changes only"));
+
+        press(ftxui::Event::Character('f'));
+        EXPECT_FALSE(shows("following"));
+    }
+
+    TEST_F(ViewerTest, UnfollowCommandStopsFollowing) {
+        attach(4096);
+        command("follow");
+        command("unfollow");
+        EXPECT_FALSE(shows("following"));
+
+        press(ftxui::Event::Character('/'));
+        EXPECT_TRUE(shows("/follow"));
+        EXPECT_FALSE(shows("/unfollow"));
+    }
+
+    TEST_F(ViewerTest, ArrowDownStopsFollowing) {
+        attach(64 * 1024);
+        command("follow");
+        press(ftxui::Event::ArrowDown);
+        EXPECT_FALSE(shows("following"));
+    }
+
+    TEST_F(ViewerTest, LiveScrollsThroughChangedRowsNotTheMapping) {
+        auto& fake = attach(64 * 1024);
+        for (std::size_t row = 0; row < 1000; row += 4) {
+            fake.heat()[row * 16] = 1;
+        }
+        viewer_.tick();
+        command("live");
+        ASSERT_TRUE(shows(rowLabel(0)));
+
+        press(ftxui::Event::ArrowDown);
+        EXPECT_FALSE(shows(rowLabel(0)));
+        EXPECT_TRUE(shows("changes only"));
+
+        press(ftxui::Event::End);
+        EXPECT_TRUE(shows(rowLabel(996 * 16)));
+
+        press(ftxui::Event::Home);
+        EXPECT_TRUE(shows(rowLabel(0)));
+        EXPECT_FALSE(shows(rowLabel(996 * 16)));
+    }
+
+    TEST_F(ViewerTest, LiveBottomUsesTheCurrentListNotTheLastDrawn) {
+        auto& fake = attach(64 * 1024);
+        viewer_.tick();
+        command("live");
+        draw();
+
+        for (std::size_t row = 0; row < 1000; row += 4) {
+            fake.heat()[row * 16] = 1;
+        }
+        viewer_.tick();
+        command("bottom");
+        EXPECT_TRUE(shows(rowLabel(996 * 16)));
+    }
+
+    TEST_F(ViewerTest, TopAndBottomCommandsWorkInLive) {
+        auto& fake = attach(64 * 1024);
+        for (std::size_t row = 0; row < 1000; row += 4) {
+            fake.heat()[row * 16] = 1;
+        }
+        viewer_.tick();
+        command("live");
+        draw();
+
+        command("bottom");
+        EXPECT_TRUE(shows(rowLabel(996 * 16)));
+        EXPECT_TRUE(shows("changes only"));
+
+        command("top");
+        EXPECT_TRUE(shows(rowLabel(0)));
+    }
+
+    TEST_F(ViewerTest, LiveDropsRowsOnceTheirHeatIsGone) {
+        auto& fake = attach(4096);
+        fake.heat()[0x100] = 1;
+        viewer_.tick();
+        command("live");
+        ASSERT_TRUE(shows(rowLabel(0x100)));
+
+        std::ranges::fill(fake.heat(), 0);
+        viewer_.tick();
+        EXPECT_FALSE(shows(rowLabel(0x100)));
+        EXPECT_TRUE(shows("nothing is changing"));
+    }
+
+    TEST_F(ViewerTest, LiveShowsTheLastPartialRow) {
+        auto& fake = attach(100);
+        fake.heat()[99] = HEAT_MAX;
+        viewer_.tick();
+        command("live");
+        EXPECT_TRUE(shows(rowLabel(0x60)));
+        EXPECT_TRUE(shows("⋯ 0x60 bytes unchanged"));
+    }
+
+    TEST_F(ViewerTest, AttachLeavesLive) {
+        attach(4096);
+        command("live");
+        attach(4096);
+        EXPECT_FALSE(shows("changes only"));
+    }
+
+    TEST_F(ViewerTest, CtrlCIsLeftToTheTerminal) {
+        attach(4096);
+        draw();
+        EXPECT_FALSE(press(ftxui::Event::CtrlC));
+        EXPECT_EQ(closes_, 0);
+    }
+
+    TEST_F(ViewerTest, MouseEventsAreLeftToTheTerminal) {
+        attach(4096);
+        draw();
+        for (const auto button : {ftxui::Mouse::Left, ftxui::Mouse::WheelDown,
+                                  ftxui::Mouse::WheelUp, ftxui::Mouse::Right}) {
+            EXPECT_FALSE(press(mouse(button)));
+        }
+        EXPECT_EQ(firstRow(), 0U);
+    }
+
+    TEST_F(ViewerTest, ArrowKeysFromTheWheelScrollInLive) {
+        auto& fake = attach(64 * 1024);
+        for (std::size_t row = 0; row < 1000; row += 4) {
+            fake.heat()[row * 16] = 1;
+        }
+        viewer_.tick();
+        command("live");
+        draw();
+
+        for (int i = 0; i < 3; ++i) {
+            press(ftxui::Event::ArrowDown);
+        }
+        EXPECT_FALSE(shows(rowLabel(0x40)));
+        EXPECT_TRUE(shows(rowLabel(0x80)));
     }
 
 }  // namespace

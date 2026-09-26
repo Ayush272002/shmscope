@@ -9,12 +9,15 @@
 #include <ftxui/component/event.hpp>
 #include <ftxui/component/mouse.hpp>
 #include <ftxui/dom/node.hpp>
+#include <ftxui/screen/color.hpp>
 #include <ftxui/screen/screen.hpp>
 #include <gtest/gtest.h>
 
 namespace {
 
     using shmscope::CommandBar;
+
+    constexpr int BORDER = 2;
 
     struct Call {
         std::string name;
@@ -32,7 +35,7 @@ namespace {
 
         void add(const std::string& name, const std::string& args,
                  const std::string& help,
-                 std::optional<std::string> error = std::nullopt) {
+                 const std::optional<std::string>& error = std::nullopt) {
             bar_.add({.name = name,
                       .args = args,
                       .help = help,
@@ -91,7 +94,7 @@ namespace {
 
     TEST_F(CommandBarTest, StartsClosed) {
         EXPECT_FALSE(bar_.isOpen());
-        EXPECT_EQ(bar_.height(), 1);
+        EXPECT_EQ(bar_.height(), BORDER + 1);
         EXPECT_TRUE(shows("/ for commands"));
     }
 
@@ -112,7 +115,7 @@ namespace {
     TEST_F(CommandBarTest, OpenListsEveryCommand) {
         press(ftxui::Event::Character('/'));
 
-        EXPECT_EQ(bar_.height(), 5);
+        EXPECT_EQ(bar_.height(), BORDER + 5);
         EXPECT_TRUE(shows("/jump <offset>"));
         EXPECT_TRUE(shows("scroll to a hex offset"));
         EXPECT_TRUE(shows("/jumpy"));
@@ -125,7 +128,7 @@ namespace {
         press(ftxui::Event::Character('/'));
         type("fr");
 
-        EXPECT_EQ(bar_.height(), 2);
+        EXPECT_EQ(bar_.height(), BORDER + 2);
         EXPECT_TRUE(shows("/freeze"));
         EXPECT_FALSE(shows("/jump"));
         EXPECT_TRUE(shows("› /fr"));
@@ -135,7 +138,7 @@ namespace {
         press(ftxui::Event::Character('/'));
         type("zzz");
 
-        EXPECT_EQ(bar_.height(), 1);
+        EXPECT_EQ(bar_.height(), BORDER + 1);
         EXPECT_FALSE(shows("/jump"));
     }
 
@@ -143,7 +146,7 @@ namespace {
         press(ftxui::Event::Character('/'));
         type("jump ");
 
-        EXPECT_EQ(bar_.height(), 2);
+        EXPECT_EQ(bar_.height(), BORDER + 2);
         EXPECT_TRUE(shows("/jump <offset>"));
         EXPECT_FALSE(shows("/jumpy"));
     }
@@ -168,8 +171,51 @@ namespace {
     TEST_F(CommandBarTest, ExactNameWinsOverLongerPrefixMatch) {
         run("jump");
 
+        EXPECT_TRUE(calls_.empty());
+        EXPECT_TRUE(shows("› /jump "));
+        EXPECT_FALSE(shows("› /jumpy"));
+    }
+
+    TEST_F(CommandBarTest, EnterOnACommandNeedingArgsCompletesIt) {
+        press(ftxui::Event::Character('/'));
+        type("ju");
+        press(ftxui::Event::Return);
+
+        EXPECT_TRUE(calls_.empty());
+        EXPECT_TRUE(bar_.isOpen());
+        EXPECT_TRUE(shows("› /jump "));
+
+        type("40");
+        press(ftxui::Event::Return);
+
         ASSERT_EQ(calls_.size(), 1U);
         EXPECT_EQ(calls_[0].name, "jump");
+        EXPECT_EQ(calls_[0].args, "40");
+    }
+
+    TEST_F(CommandBarTest, UnavailableCommandsAreHiddenAndUnknown) {
+        bool enabled = false;
+        bar_.add({.name = "unfreeze",
+                  .help = "resume",
+                  .run =
+                      [this](std::string_view) {
+                          calls_.push_back({"unfreeze", ""});
+                          return std::optional<std::string>{};
+                      },
+                  .available = [&enabled] { return enabled; }});
+
+        press(ftxui::Event::Character('/'));
+        EXPECT_FALSE(shows("/unfreeze"));
+        type("unfreeze");
+        press(ftxui::Event::Return);
+        EXPECT_TRUE(calls_.empty());
+        EXPECT_TRUE(shows("unknown command /unfreeze"));
+
+        enabled = true;
+        press(ftxui::Event::Escape);
+        run("unfreeze");
+        ASSERT_EQ(calls_.size(), 1U);
+        EXPECT_EQ(calls_[0].name, "unfreeze");
     }
 
     TEST_F(CommandBarTest, PrefixRunsTheHighlightedSuggestion) {
@@ -198,17 +244,24 @@ namespace {
     }
 
     TEST_F(CommandBarTest, TrailingSpacesOnlyGiveEmptyArgs) {
-        run("jump   ");
+        run("freeze   ");
 
         ASSERT_EQ(calls_.size(), 1U);
         EXPECT_EQ(calls_[0].args, "");
     }
 
-    TEST_F(CommandBarTest, EmptyInputRunsTheFirstCommand) {
+    TEST_F(CommandBarTest, TrailingSpacesAfterACommandNeedingArgsDoNotRun) {
+        run("jump   ");
+
+        EXPECT_TRUE(calls_.empty());
+        EXPECT_TRUE(shows("› /jump "));
+    }
+
+    TEST_F(CommandBarTest, EmptyInputPicksTheFirstCommand) {
         run("");
 
-        ASSERT_EQ(calls_.size(), 1U);
-        EXPECT_EQ(calls_[0].name, "jump");
+        EXPECT_TRUE(calls_.empty());
+        EXPECT_TRUE(shows("› /jump "));
     }
 
     TEST_F(CommandBarTest, UnknownCommandShowsErrorAndStaysOpen) {
@@ -217,7 +270,7 @@ namespace {
         EXPECT_TRUE(calls_.empty());
         EXPECT_TRUE(bar_.isOpen());
         EXPECT_TRUE(shows("unknown command /nope"));
-        EXPECT_EQ(bar_.height(), 2);
+        EXPECT_EQ(bar_.height(), BORDER + 2);
     }
 
     TEST_F(CommandBarTest, UnknownCommandWithArgsNamesOnlyTheWord) {
@@ -235,7 +288,7 @@ namespace {
         EXPECT_FALSE(bar_.isOpen());
         EXPECT_TRUE(shows("it broke"));
         EXPECT_TRUE(shows("/ for commands"));
-        EXPECT_EQ(bar_.height(), 2);
+        EXPECT_EQ(bar_.height(), BORDER + 2);
     }
 
     TEST_F(CommandBarTest, ReopeningClearsTheError) {
@@ -248,14 +301,14 @@ namespace {
     TEST_F(CommandBarTest, SuccessfulRunLeavesNoError) {
         run("freeze");
 
-        EXPECT_EQ(bar_.height(), 1);
+        EXPECT_EQ(bar_.height(), BORDER + 1);
     }
 
     TEST_F(CommandBarTest, InputIsClearedAfterRunning) {
         run("freeze");
         press(ftxui::Event::Character('/'));
 
-        EXPECT_EQ(bar_.height(), 5);
+        EXPECT_EQ(bar_.height(), BORDER + 5);
         EXPECT_TRUE(shows("› / "));
     }
 
@@ -269,6 +322,26 @@ namespace {
         ASSERT_EQ(calls_.size(), 1U);
         EXPECT_EQ(calls_[0].name, "freeze");
         EXPECT_EQ(calls_[0].args, "now");
+    }
+
+    TEST_F(CommandBarTest, TabKeepsArgumentsAlreadyTyped) {
+        press(ftxui::Event::Character('/'));
+        type("jump 12");
+        press(ftxui::Event::Tab);
+
+        EXPECT_TRUE(shows("› /jump 12"));
+        press(ftxui::Event::Return);
+        ASSERT_EQ(calls_.size(), 1U);
+        EXPECT_EQ(calls_[0].args, "12");
+    }
+
+    TEST_F(CommandBarTest, TabAfterTheCommandSpaceChangesNothing) {
+        press(ftxui::Event::Character('/'));
+        type("jump ");
+        press(ftxui::Event::Tab);
+
+        EXPECT_TRUE(shows("› /jump "));
+        EXPECT_FALSE(shows("› /jump jump"));
     }
 
     TEST_F(CommandBarTest, TabCompletesTheSelectedPrefixMatch) {
@@ -294,8 +367,8 @@ namespace {
         press(ftxui::Event::ArrowUp);
         press(ftxui::Event::Return);
 
-        ASSERT_EQ(calls_.size(), 1U);
-        EXPECT_EQ(calls_[0].name, "jump");
+        EXPECT_TRUE(calls_.empty());
+        EXPECT_TRUE(shows("› /jump "));
     }
 
     TEST_F(CommandBarTest, ArrowDownStopsAtTheLastSuggestion) {
@@ -323,8 +396,9 @@ namespace {
         type("j");
         press(ftxui::Event::Return);
 
-        ASSERT_EQ(calls_.size(), 1U);
-        EXPECT_EQ(calls_[0].name, "jump");
+        EXPECT_TRUE(calls_.empty());
+        EXPECT_TRUE(shows("› /jump "));
+        EXPECT_FALSE(shows("› /jumpy"));
     }
 
     TEST_F(CommandBarTest, BackspaceDeletesOneCharacter) {
@@ -359,7 +433,7 @@ namespace {
         press(ftxui::Event::Escape);
         press(ftxui::Event::Character('/'));
 
-        EXPECT_EQ(bar_.height(), 5);
+        EXPECT_EQ(bar_.height(), BORDER + 5);
     }
 
     TEST_F(CommandBarTest, OpenBarSwallowsKeysSoTheyDoNotLeak) {
@@ -387,8 +461,8 @@ namespace {
     }
 
     TEST_F(CommandBarTest, DuplicateNamesRunTheFirstRegistered) {
-        add("jump", "", "second jump", "from the duplicate");
-        run("jump");
+        add("freeze", "", "second freeze", "from the duplicate");
+        run("freeze");
 
         ASSERT_EQ(calls_.size(), 1U);
         EXPECT_FALSE(shows("from the duplicate"));
@@ -439,7 +513,7 @@ namespace {
         press(ftxui::Event::Backspace);
 
         EXPECT_TRUE(shows("› / "));
-        EXPECT_EQ(bar_.height(), 5);
+        EXPECT_EQ(bar_.height(), BORDER + 5);
     }
 
     TEST_F(CommandBarTest, BackspaceRemovesAThreeByteCharacter) {
@@ -449,7 +523,7 @@ namespace {
         press(ftxui::Event::Backspace);
 
         EXPECT_TRUE(shows("› /fr "));
-        EXPECT_EQ(bar_.height(), 2);
+        EXPECT_EQ(bar_.height(), BORDER + 2);
     }
 
     TEST_F(CommandBarTest, BackspaceAfterMultibyteLeavesEarlierAscii) {
@@ -470,7 +544,80 @@ namespace {
         empty.onEvent(ftxui::Event::Return);
 
         EXPECT_TRUE(empty.isOpen());
-        EXPECT_EQ(empty.height(), 2);
+        EXPECT_EQ(empty.height(), BORDER + 2);
+    }
+
+    TEST_F(CommandBarTest, HiddenCommandsAreSkippedByArrowKeys) {
+        CommandBar bar;
+        std::vector<std::string> ran;
+        const auto runner = [&ran](const std::string& name) {
+            return [&ran, name](std::string_view) {
+                ran.push_back(name);
+                return std::optional<std::string>{};
+            };
+        };
+        bar.add({.name = "alpha", .run = runner("alpha")});
+        bar.add({.name = "beta", .run = runner("beta"), .available = [] {
+                     return false;
+                 }});
+        bar.add({.name = "gamma", .run = runner("gamma")});
+
+        bar.onEvent(ftxui::Event::Character('/'));
+        bar.onEvent(ftxui::Event::ArrowDown);
+        bar.onEvent(ftxui::Event::Return);
+
+        ASSERT_EQ(ran.size(), 1U);
+        EXPECT_EQ(ran[0], "gamma");
+    }
+
+    TEST_F(CommandBarTest, HiddenCommandsDoNotCountTowardsHeight) {
+        bool shown = false;
+        bar_.add(
+            {.name = "extra",
+             .run =
+                 [](std::string_view) { return std::optional<std::string>{}; },
+             .available = [&shown] { return shown; }});
+
+        press(ftxui::Event::Character('/'));
+        EXPECT_EQ(bar_.height(), BORDER + 5);
+
+        shown = true;
+        EXPECT_EQ(bar_.height(), BORDER + 6);
+    }
+
+    TEST_F(CommandBarTest, HeightCountsTheErrorAndTheSuggestions) {
+        press(ftxui::Event::Character('/'));
+        type("nope");
+        press(ftxui::Event::Return);
+        EXPECT_EQ(bar_.height(), BORDER + 2);
+
+        press(ftxui::Event::Backspace);
+        press(ftxui::Event::Backspace);
+        press(ftxui::Event::Backspace);
+        press(ftxui::Event::Backspace);
+        EXPECT_EQ(bar_.height(), BORDER + 6);
+    }
+
+    TEST_F(CommandBarTest, ArrowUpAfterDownReturnsToTheFirst) {
+        press(ftxui::Event::Character('/'));
+        type("ju");
+        press(ftxui::Event::ArrowDown);
+        press(ftxui::Event::ArrowUp);
+        press(ftxui::Event::Tab);
+
+        EXPECT_TRUE(shows("› /jump "));
+        EXPECT_FALSE(shows("› /jumpy"));
+    }
+
+    TEST_F(CommandBarTest, SelectedSuggestionIsDrawnInTheAccentColour) {
+        press(ftxui::Event::Character('/'));
+        press(ftxui::Event::ArrowDown);
+
+        auto screen = ftxui::Screen(80, 10);
+        ftxui::Render(screen, bar_.render());
+        const auto accent = ftxui::Color::RGB(122, 162, 247);
+        EXPECT_EQ(screen.PixelAt(4, 4).foreground_color, accent);
+        EXPECT_NE(screen.PixelAt(4, 3).foreground_color, accent);
     }
 
 }  // namespace

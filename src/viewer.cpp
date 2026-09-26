@@ -2,22 +2,29 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cstddef>
 #include <cstdint>
 #include <format>
+#include <memory>
+#include <optional>
+#include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
+#include <vector>
 
 #include <ftxui/component/component.hpp>
+#include <ftxui/dom/elements.hpp>
 #include <ftxui/screen/color.hpp>
 #include <ftxui/screen/terminal.hpp>
+
+#include "shmscope/source.hpp"
 
 namespace shmscope {
 
     namespace {
 
-        // Rows that are not hex, besides the command bar: two border lines,
-        // the column ruler, the separator and the torn read warning.
-        constexpr int CHROME_ROWS = 5;
+        constexpr int CHROME_ROWS = 3;
 
         ftxui::Color heatColor(std::uint8_t heat, std::byte value) {
             const auto cold = value == std::byte{0}
@@ -59,7 +66,11 @@ namespace shmscope {
     void Viewer::attach(std::unique_ptr<Source> source) {
         source_ = std::move(source);
         top_ = 0;
+        followBlock_ = 0;
+        following_ = false;
         frozen_ = false;
+        live_ = false;
+        liveTop_ = 0;
         frame_ = source_->poll();
     }
 
@@ -71,7 +82,187 @@ namespace shmscope {
     void Viewer::tick() noexcept {
         if (source_ && !frozen_) {
             frame_ = source_->poll();
+            if (following_) follow();
         }
+    }
+
+    void Viewer::follow() noexcept {
+        constexpr std::size_t blockBytes = FOLLOW_BLOCK_ROWS * BYTES_PER_ROW;
+        const auto heat = frame_.heat;
+
+        std::size_t bestBlock = 0;
+        std::size_t bestScore = 0;
+        std::size_t currentScore = 0;
+        for (std::size_t start = 0; start < heat.size(); start += blockBytes) {
+            const auto chunk =
+                heat.subspan(start, std::min(blockBytes, heat.size() - start));
+            std::size_t score = 0;
+            for (const std::uint8_t h : chunk) {
+                score += h == HEAT_MAX ? 1 : 0;
+            }
+            const std::size_t block = start / blockBytes;
+            if (block == followBlock_) {
+                currentScore = score;
+            }
+            if (score > bestScore) {
+                bestScore = score;
+                bestBlock = block;
+            }
+        }
+
+        if (bestScore == 0) {
+            return;
+        }
+        if (bestScore > 2 * currentScore) {
+            followBlock_ = bestBlock;
+        }
+
+        const std::size_t start = followBlock_ * blockBytes;
+        const auto chunk =
+            heat.subspan(start, std::min(blockBytes, heat.size() - start));
+        const auto first = std::ranges::find(chunk, HEAT_MAX);
+        const std::size_t offset =
+            start + static_cast<std::size_t>(first - chunk.begin());
+        const std::size_t row = offset / BYTES_PER_ROW;
+        const std::size_t lead = visibleRows_ / 4;
+        top_ = std::min(row > lead ? row - lead : 0, maxTop());
+    }
+
+    void Viewer::goTo(std::size_t row) noexcept {
+        following_ = false;
+        top_ = std::min(row, maxTop());
+    }
+
+    void Viewer::toTop() noexcept {
+        if (live_) {
+            liveTop_ = 0;
+        } else {
+            goTo(0);
+        }
+    }
+
+    void Viewer::toBottom() {
+        if (live_) {
+            buildLive();
+            liveTop_ = liveMaxTop();
+        } else {
+            goTo(maxTop());
+        }
+    }
+
+    bool Viewer::rowChanged(std::size_t row) const noexcept {
+        const auto heat = frame_.heat;
+        const std::size_t begin = row * BYTES_PER_ROW;
+        const std::size_t end = std::min(begin + BYTES_PER_ROW, heat.size());
+        return std::any_of(heat.begin() + static_cast<std::ptrdiff_t>(begin),
+                           heat.begin() + static_cast<std::ptrdiff_t>(end),
+                           [](std::uint8_t h) { return h > 0; });
+    }
+
+    void Viewer::buildLive() {
+        struct Region {
+            std::size_t first;
+            std::size_t last;
+        };
+        std::vector<Region> regions;
+
+        const std::size_t rows = rowCount();
+        std::size_t row = 0;
+        while (row < rows) {
+            if (!rowChanged(row)) {
+                ++row;
+                continue;
+            }
+            Region region{.first = row, .last = row};
+            for (std::size_t next = row + 1;
+                 next < rows && next <= region.last + LIVE_MERGE_ROWS + 1;
+                 ++next) {
+                if (rowChanged(next)) {
+                    region.last = next;
+                }
+            }
+            regions.push_back(region);
+            row = region.last + 1;
+        }
+
+        const auto linesFor = [&regions](std::size_t cap) {
+            std::size_t lines = 0;
+            std::size_t shownUpTo = 0;
+            for (const Region& region : regions) {
+                const std::size_t length = region.last - region.first + 1;
+                lines += (region.first > shownUpTo ? 1 : 0) +
+                         std::min(length, cap) + (length > cap ? 1 : 0);
+                shownUpTo = region.last + 1;
+            }
+            return lines;
+        };
+
+        std::size_t longest = 0;
+        for (const Region& region : regions) {
+            longest = std::max(longest, region.last - region.first + 1);
+        }
+        std::size_t cap = LIVE_RUN_ROWS;
+        while (cap < longest && linesFor(cap + 1) <= visibleRows_) {
+            ++cap;
+        }
+
+        liveLines_.clear();
+        std::size_t shownUpTo = 0;
+        for (const Region& region : regions) {
+            if (region.first > shownUpTo) {
+                liveLines_.push_back(
+                    {.kind = LiveLine::Kind::GAP,
+                     .value = (region.first - shownUpTo) * BYTES_PER_ROW});
+            }
+            const std::size_t length = region.last - region.first + 1;
+            const std::size_t shown = std::min(length, cap);
+            for (std::size_t i = 0; i < shown; ++i) {
+                liveLines_.push_back(
+                    {.kind = LiveLine::Kind::ROW, .value = region.first + i});
+            }
+            if (length > shown) {
+                liveLines_.push_back(
+                    {.kind = LiveLine::Kind::MORE, .value = length - shown});
+            }
+            shownUpTo = region.last + 1;
+        }
+    }
+
+    std::size_t Viewer::liveMaxTop() const noexcept {
+        return liveLines_.size() > visibleRows_
+                   ? liveLines_.size() - visibleRows_
+                   : 0;
+    }
+
+    ftxui::Elements Viewer::renderLive(std::size_t count) const {
+        ftxui::Elements lines;
+        if (liveLines_.empty()) {
+            lines.push_back(ftxui::text("  nothing is changing") | ftxui::dim);
+            return lines;
+        }
+
+        const std::size_t end = std::min(liveLines_.size(), liveTop_ + count);
+        for (std::size_t i = liveTop_; i < end; ++i) {
+            const LiveLine& line = liveLines_[i];
+            switch (line.kind) {
+                case LiveLine::Kind::ROW:
+                    lines.push_back(renderRow(line.value));
+                    break;
+                case LiveLine::Kind::GAP:
+                    lines.push_back(ftxui::text(std::format(
+                                        "            ⋯ 0x{:x} bytes unchanged",
+                                        line.value)) |
+                                    ftxui::dim);
+                    break;
+                case LiveLine::Kind::MORE:
+                    lines.push_back(
+                        ftxui::text(std::format("            ⋯ {} more rows",
+                                                line.value)) |
+                        ftxui::dim);
+                    break;
+            }
+        }
+        return lines;
     }
 
     std::size_t Viewer::rowCount() const noexcept {
@@ -83,6 +274,13 @@ namespace shmscope {
     }
 
     void Viewer::scrollBy(std::ptrdiff_t rows) noexcept {
+        following_ = false;
+        if (live_) {
+            const auto target = static_cast<std::ptrdiff_t>(liveTop_) + rows;
+            liveTop_ = static_cast<std::size_t>(std::clamp<std::ptrdiff_t>(
+                target, 0, static_cast<std::ptrdiff_t>(liveMaxTop())));
+            return;
+        }
         const auto target = static_cast<std::ptrdiff_t>(top_) + rows;
         top_ = static_cast<std::size_t>(std::clamp<std::ptrdiff_t>(
             target, 0, static_cast<std::ptrdiff_t>(maxTop())));
@@ -95,41 +293,26 @@ namespace shmscope {
             return true;
         }
 
-        if (event.is_mouse()) {
-            auto copy = event;
-            const auto button = copy.mouse().button;
-            if (button == ftxui::Mouse::WheelUp) {
-                scrollBy(-WHEEL_ROWS);
-                return true;
-            }
-            if (button == ftxui::Mouse::WheelDown) {
-                scrollBy(WHEEL_ROWS);
-                return true;
-            }
-            return false;
-        }
-
         if (event == ftxui::Event::Escape ||
             event == ftxui::Event::Character('q')) {
             onClose_();
         } else if (event == ftxui::Event::Character(' ')) {
             frozen_ = !frozen_;
-        } else if (event == ftxui::Event::ArrowDown ||
-                   event == ftxui::Event::Character('j')) {
+        } else if (event == ftxui::Event::Character('f')) {
+            following_ = !following_;
+            live_ = live_ && !following_;  // follow belongs to the hex view
+        } else if (event == ftxui::Event::ArrowDown) {
             scrollBy(1);
-        } else if (event == ftxui::Event::ArrowUp ||
-                   event == ftxui::Event::Character('k')) {
+        } else if (event == ftxui::Event::ArrowUp) {
             scrollBy(-1);
         } else if (event == ftxui::Event::PageDown) {
             scrollBy(page);
         } else if (event == ftxui::Event::PageUp) {
             scrollBy(-page);
-        } else if (event == ftxui::Event::Character('g') ||
-                   event == ftxui::Event::Home) {
-            top_ = 0;
-        } else if (event == ftxui::Event::Character('G') ||
-                   event == ftxui::Event::End) {
-            top_ = maxTop();
+        } else if (event == ftxui::Event::Home) {
+            toTop();
+        } else if (event == ftxui::Event::End) {
+            toBottom();
         } else {
             return false;
         }
@@ -162,7 +345,6 @@ namespace shmscope {
     }
 
     ftxui::Element Viewer::render() {
-        // Only rows on screen are built; a 1 MiB object is 65536 rows.
         visibleRows_ = static_cast<std::size_t>(std::max(
             1,
             ftxui::Terminal::Size().dimy - CHROME_ROWS - commandBar_.height()));
@@ -175,6 +357,11 @@ namespace shmscope {
             frozen_ ? ftxui::text(" frozen ") | ftxui::bold |
                           ftxui::color(ftxui::Color::Cyan)
                     : ftxui::text(" live ") | ftxui::color(ftxui::Color::Green);
+        const auto accent = ftxui::Color::RGB(122, 162, 247);
+        auto follow =
+            following_ ? ftxui::text(" following ") | ftxui::color(accent)
+            : live_    ? ftxui::text(" changes only ") | ftxui::color(accent)
+                       : ftxui::emptyElement();
         auto title = ftxui::vbox({
             ftxui::hbox({
                 spacer,
@@ -183,17 +370,37 @@ namespace shmscope {
                 ftxui::text(std::format(" {} bytes · {} Hz ",
                                         frame_.bytes.size(), hz_)) |
                     ftxui::dim,
+                follow,
                 state,
                 spacer,
             }),
             ftxui::filler(),
         });
 
+        auto caveat = ftxui::vbox({
+            ftxui::filler(),
+            ftxui::hbox({
+                ftxui::filler(),
+                ftxui::text(" reads are unsynchronised · values may tear "
+                            "mid write ") |
+                    ftxui::dim,
+                spacer,
+            }),
+        });
+
+        const std::size_t drawn = 2 * visibleRows_;
+
         ftxui::Elements rows;
-        rows.reserve(visibleRows_);
-        const std::size_t end = std::min(rowCount(), top_ + visibleRows_);
-        for (std::size_t row = top_; row < end; ++row) {
-            rows.push_back(renderRow(row));
+        if (live_) {
+            buildLive();
+            liveTop_ = std::min(liveTop_, liveMaxTop());
+            rows = renderLive(drawn);
+        } else {
+            rows.reserve(drawn);
+            const std::size_t end = std::min(rowCount(), top_ + drawn);
+            for (std::size_t row = top_; row < end; ++row) {
+                rows.push_back(renderRow(row));
+            }
         }
 
         auto ruler = ftxui::text(
@@ -201,22 +408,17 @@ namespace shmscope {
                          "08 09 0a 0b 0c 0d 0e 0f") |
                      ftxui::dim;
 
-        auto footer = ftxui::vbox({
-            ftxui::text(
-                " reads are unsynchronised; a value may be torn mid write") |
-                ftxui::dim,
+        auto pane =
+            ftxui::vbox({
+                ruler,
+                ftxui::vbox(std::move(rows)) | ftxui::yframe | ftxui::flex,
+            }) |
+            ftxui::borderRounded;
+
+        return ftxui::vbox({
+            ftxui::dbox({pane, title, caveat}) | ftxui::flex,
             commandBar_.render(),
         });
-
-        auto frame = ftxui::vbox({
-                         ruler,
-                         ftxui::vbox(std::move(rows)) | ftxui::flex,
-                         ftxui::separator(),
-                         footer,
-                     }) |
-                     ftxui::borderLight;
-
-        return ftxui::dbox({frame, title});
     }
 
     void Viewer::addCommands() {
@@ -225,22 +427,67 @@ namespace shmscope {
              .args = "<offset>",
              .help = "scroll to a hex offset",
              .run = [this](std::string_view args) { return jump(args); }});
+        commandBar_.add({.name = "live",
+                         .help = "show only the rows that are changing",
+                         .run =
+                             [this](std::string_view) {
+                                 live_ = true;
+                                 following_ = false;
+                                 liveTop_ = 0;
+                                 return std::optional<std::string>{};
+                             },
+                         .available = [this] { return !live_; }});
+        commandBar_.add({.name = "hex",
+                         .help = "show the whole mapping again",
+                         .run =
+                             [this](std::string_view) {
+                                 live_ = false;
+                                 return std::optional<std::string>{};
+                             },
+                         .available = [this] { return live_; }});
+        commandBar_.add({.name = "follow",
+                         .help = "keep the view on the writer",
+                         .run =
+                             [this](std::string_view) {
+                                 following_ = true;
+                                 live_ = false;
+                                 return std::optional<std::string>{};
+                             },
+                         .available = [this] { return !following_; }});
+        commandBar_.add({.name = "unfollow",
+                         .help = "stop tracking the writer",
+                         .run =
+                             [this](std::string_view) {
+                                 following_ = false;
+                                 return std::optional<std::string>{};
+                             },
+                         .available = [this] { return following_; }});
         commandBar_.add({.name = "freeze",
-                         .help = "pause or resume live updates",
-                         .run = [this](std::string_view) {
-                             frozen_ = !frozen_;
-                             return std::optional<std::string>{};
-                         }});
+                         .help = "pause live updates",
+                         .run =
+                             [this](std::string_view) {
+                                 frozen_ = true;
+                                 return std::optional<std::string>{};
+                             },
+                         .available = [this] { return !frozen_; }});
+        commandBar_.add({.name = "unfreeze",
+                         .help = "resume live updates",
+                         .run =
+                             [this](std::string_view) {
+                                 frozen_ = false;
+                                 return std::optional<std::string>{};
+                             },
+                         .available = [this] { return frozen_; }});
         commandBar_.add({.name = "top",
-                         .help = "go to offset 0",
+                         .help = "go to the first row",
                          .run = [this](std::string_view) {
-                             top_ = 0;
+                             toTop();
                              return std::optional<std::string>{};
                          }});
         commandBar_.add({.name = "bottom",
                          .help = "go to the last row",
                          .run = [this](std::string_view) {
-                             top_ = maxTop();
+                             toBottom();
                              return std::optional<std::string>{};
                          }});
         commandBar_.add({.name = "close",
@@ -260,7 +507,8 @@ namespace shmscope {
             return std::format("0x{:x} is past the end (0x{:x} bytes)", *offset,
                                frame_.bytes.size());
         }
-        top_ = std::min(*offset / BYTES_PER_ROW, maxTop());
+        live_ = false;
+        goTo(*offset / BYTES_PER_ROW);
         return std::nullopt;
     }
 

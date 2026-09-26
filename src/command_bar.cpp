@@ -1,8 +1,14 @@
 #include "shmscope/command_bar.hpp"
 
 #include <algorithm>
+#include <cstddef>
+#include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
+#include <ftxui/component/event.hpp>
+#include <ftxui/dom/elements.hpp>
 #include <ftxui/screen/color.hpp>
 
 namespace shmscope {
@@ -31,7 +37,11 @@ namespace shmscope {
         std::vector<std::size_t> found;
 
         for (std::size_t i = 0; i < commands_.size(); ++i) {
-            const std::string_view name = commands_[i].name;
+            const Command& command = commands_[i];
+            if (command.available && !command.available()) {
+                continue;
+            }
+            const std::string_view name = command.name;
             if (chosen ? name == word() : name.starts_with(word())) {
                 found.push_back(i);
             }
@@ -46,6 +56,8 @@ namespace shmscope {
     }
 
     void CommandBar::complete() {
+        if (input_.find(' ') != std::string::npos) return;
+
         const auto found = matches();
         if (found.empty()) return;
 
@@ -67,6 +79,12 @@ namespace shmscope {
         const std::size_t index =
             exact != found.end() ? *exact
                                  : found[std::min(selected_, found.size() - 1)];
+
+        if (!commands_[index].args.empty() && args().empty()) {
+            input_ = commands_[index].name + ' ';
+            selected_ = 0;
+            return;
+        }
 
         const std::string arguments(args());
         close();
@@ -119,47 +137,65 @@ namespace shmscope {
 
     int CommandBar::height() const noexcept {
         const int errorLine = error_.empty() ? 0 : 1;
-        if (!open_) {
-            return 1 + errorLine;
-        }
-        return 1 + errorLine + static_cast<int>(matches().size());
+        const int suggestions = open_ ? static_cast<int>(matches().size()) : 0;
+        return 3 + errorLine + suggestions;
     }
 
     ftxui::Element CommandBar::render() const {
-        ftxui::Elements lines;
+        const auto accent = ftxui::Color::RGB(122, 162, 247);
+        const auto muted = ftxui::Color::RGB(110, 110, 110);
 
-        if (open_) {
-            const auto found = matches();
-            for (std::size_t n = 0; n < found.size(); ++n) {
-                const Command& command = commands_[found[n]];
-                auto line = ftxui::hbox({
-                    ftxui::text("  /" + command.name) | ftxui::bold,
-                    ftxui::text(command.args.empty() ? ""
-                                                     : " " + command.args) |
-                        ftxui::dim,
-                    ftxui::filler(),
-                    ftxui::text(command.help + "  ") | ftxui::dim,
-                });
-                if (n == std::min(selected_, found.size() - 1)) {
-                    line = line | ftxui::inverted;
-                }
-                lines.push_back(std::move(line));
-            }
-        }
+        const auto prompt =
+            open_ ? ftxui::hbox({
+                        ftxui::text(" › ") | ftxui::color(accent),
+                        ftxui::text("/" + input_),
+                        ftxui::text(" ") | ftxui::focusCursorBarBlinking,
+                    })
+                  : ftxui::hbox({
+                        ftxui::text(" › ") | ftxui::color(muted),
+                        ftxui::text("/ for commands") | ftxui::color(muted),
+                    });
+
+        ftxui::Elements lines;
+        lines.push_back(prompt | ftxui::xflex |
+                        ftxui::borderStyled(ftxui::ROUNDED, muted));
 
         if (!error_.empty()) {
-            lines.push_back(ftxui::text(" " + error_) |
+            lines.push_back(ftxui::text("   " + error_) |
                             ftxui::color(ftxui::Color::Red));
         }
 
         if (open_) {
-            lines.push_back(ftxui::hbox({
-                ftxui::text(" › /") | ftxui::bold,
-                ftxui::text(input_),
-                ftxui::text(" ") | ftxui::inverted,
-            }));
-        } else {
-            lines.push_back(ftxui::text(" / for commands") | ftxui::dim);
+            const auto found = matches();
+
+            std::size_t width = 0;
+            for (const std::size_t i : found) {
+                const Command& command = commands_[i];
+                width = std::max(width,
+                                 command.name.size() + command.args.size() + 2);
+            }
+
+            const std::size_t current =
+                found.empty() ? 0 : std::min(selected_, found.size() - 1);
+            for (std::size_t n = 0; n < found.size(); ++n) {
+                const Command& command = commands_[found[n]];
+                const bool selected = n == current;
+
+                std::string label = "/" + command.name;
+                if (!command.args.empty()) {
+                    label += " " + command.args;
+                }
+
+                label.resize(width + 2, ' ');
+
+                lines.push_back(ftxui::hbox({
+                    ftxui::text("   "),
+                    ftxui::text(label) |
+                        ftxui::color(selected ? accent : ftxui::Color::Default),
+                    ftxui::text(command.help) |
+                        ftxui::color(selected ? accent : muted),
+                }));
+            }
         }
 
         return ftxui::vbox(std::move(lines));

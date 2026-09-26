@@ -22,6 +22,7 @@ namespace shmscope {
             std::string args{};  // hint such as "<offset>", empty if none
             std::string help{};
             RunFn run;
+            std::function<bool()> available{};
         };
 
         void add(Command command);
@@ -31,7 +32,6 @@ namespace shmscope {
 
         [[nodiscard]] bool isOpen() const noexcept { return open_; }
 
-        // Lines render() will occupy, so the owner can size its content.
         [[nodiscard]] int height() const noexcept;
 
         [[nodiscard]] ftxui::Element render() const;
