@@ -93,7 +93,7 @@ if(SHMSCOPE_BUILD_TESTS)
     file(GLOB TEST_SOURCES CONFIGURE_DEPENDS tests/*.cpp)
     if(TEST_SOURCES)
         add_executable(shmscope_tests ${TEST_SOURCES})
-        target_link_libraries(shmscope_tests PRIVATE shmscope_core shmscope::warnings shmscope::sanitizers GTest::gtest_main)
+        target_link_libraries(shmscope_tests PRIVATE shmscope_core highway::highway shmscope::warnings shmscope::sanitizers GTest::gtest_main)
 
         target_include_directories(shmscope_tests PRIVATE
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests")

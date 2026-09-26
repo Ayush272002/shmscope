@@ -1,11 +1,13 @@
 #include "shmscope/diff.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <random>
 #include <vector>
 
 #include <gtest/gtest.h>
+#include <hwy/targets.h>
 
 #include "shmscope/source.hpp"
 
@@ -14,7 +16,6 @@ namespace {
     using shmscope::copyDiff;
     using shmscope::HEAT_MAX;
 
-    // Byte at a time reference the SIMD version must agree with.
     void referenceCopyDiff(const std::vector<std::byte>& mapping,
                            std::vector<std::byte>& current,
                            const std::vector<std::byte>& previous,
@@ -29,7 +30,6 @@ namespace {
         }
     }
 
-    // Buffers sized exactly, so ASan flags any read or write past the end.
     struct Buffers {
         explicit Buffers(std::size_t size)
             : mapping(size), current(size), previous(size), heat(size) {}
@@ -47,16 +47,12 @@ namespace {
 
     class CopyDiffSizes : public ::testing::TestWithParam<std::size_t> {};
 
-    // Sizes straddle every loop boundary: empty, the scalar tail, one vector
-    // (16 on NEON, 32 on AVX2, 64 on AVX-512), the 4x unrolled block, and
-    // a page plus a few bytes.
     INSTANTIATE_TEST_SUITE_P(Boundaries, CopyDiffSizes,
                              ::testing::Values(0, 1, 7, 15, 16, 17, 31, 32, 33,
                                                63, 64, 65, 127, 128, 129, 255,
                                                256, 257, 1000, 4099, 65536));
 
-    TEST_P(CopyDiffSizes, MatchesScalarReference) {
-        const std::size_t size = GetParam();
+    void expectMatchesReference(std::size_t size) {
         std::mt19937 rng(static_cast<unsigned>(size));
         Buffers simd(size);
         for (std::size_t i = 0; i < size; ++i) {
@@ -73,6 +69,48 @@ namespace {
 
         EXPECT_EQ(simd.current, scalar.current);
         EXPECT_EQ(simd.heat, scalar.heat);
+    }
+
+    TEST_P(CopyDiffSizes, MatchesScalarReference) {
+        expectMatchesReference(GetParam());
+    }
+
+    TEST(CopyDiff, EveryTargetMatchesScalarReference) {
+        for (const std::int64_t target : hwy::SupportedAndGeneratedTargets()) {
+            SCOPED_TRACE(hwy::TargetName(target));
+            hwy::SetSupportedTargetsForTest(target);
+            for (const std::size_t size :
+                 std::array<std::size_t, 6>{0, 1, 17, 65, 257, 4099}) {
+                expectMatchesReference(size);
+            }
+        }
+        hwy::SetSupportedTargetsForTest(0);
+    }
+
+    TEST(CopyDiff, EveryByteChangedIsAllHot) {
+        Buffers b(1000);
+        for (auto& byte : b.mapping) {
+            byte = std::byte{0xff};
+        }
+
+        b.run();
+
+        for (const auto h : b.heat) {
+            ASSERT_EQ(h, HEAT_MAX);
+        }
+    }
+
+    TEST(CopyDiff, HeatReachesZeroAfterHeatMaxQuietPolls) {
+        Buffers b(100);
+        b.mapping[3] = std::byte{1};
+        b.run();
+        b.previous = b.current;
+
+        for (int poll = 0; poll < HEAT_MAX; ++poll) {
+            b.run();
+        }
+
+        EXPECT_EQ(b.heat[3], 0);
     }
 
     TEST(CopyDiff, CopiesMappingIntoCurrent) {
