@@ -1,10 +1,12 @@
 #pragma once
 
+#include <functional>
+#include <string>
+#include <utility>
+
 #include <ftxui/component/component_base.hpp>
 #include <ftxui/component/event.hpp>
 #include <ftxui/dom/elements.hpp>
-#include <functional>
-#include <string>
 
 namespace shmscope {
 

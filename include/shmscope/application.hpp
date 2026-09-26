@@ -1,11 +1,10 @@
 #pragma once
 
-#include <ftxui/component/app.hpp>
-#include <ftxui/component/component_base.hpp>
-#include <ftxui/component/event.hpp>
-#include <ftxui/dom/elements.hpp>
+#include <string>
 
-#include "launcher.hpp"
+#include <ftxui/component/app.hpp>
+
+#include "shmscope/launcher.hpp"
 
 namespace shmscope {
 
