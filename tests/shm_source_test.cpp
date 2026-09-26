@@ -22,9 +22,6 @@ namespace {
     using shmscope::ShmSource;
     using shmscope::Source;
 
-    // Plays the writer: creates a uniquely named object, maps it read write,
-    // and unlinks it on destruction. The name carries the pid so parallel
-    // ctest processes never collide, and stays under macOS's 31 characters.
     class TestSegment {
     public:
         explicit TestSegment(std::size_t size) : size_(size) {
@@ -192,6 +189,60 @@ namespace {
         EXPECT_EQ(source->poll().sequence, 1U);
         EXPECT_EQ(source->poll().sequence, 2U);
         EXPECT_EQ(source->poll().sequence, 3U);
+    }
+
+    TEST(ShmSource, RewritingTheSameValueStaysCold) {
+        TestSegment segment(4096);
+        ASSERT_TRUE(segment.ready());
+        segment.write(9, std::byte{3});
+        auto source = openOrFail(segment.name());
+        ASSERT_NE(source, nullptr);
+        ASSERT_EQ(source->poll().heat[9], 0);
+
+        segment.write(9, std::byte{3});
+
+        EXPECT_EQ(source->poll().heat[9], 0);
+    }
+
+    TEST(ShmSource, ContinuousWritesStayHot) {
+        TestSegment segment(4096);
+        ASSERT_TRUE(segment.ready());
+        auto source = openOrFail(segment.name());
+        ASSERT_NE(source, nullptr);
+
+        for (int value = 1; value <= 5; ++value) {
+            segment.write(64, static_cast<std::byte>(value));
+            EXPECT_EQ(source->poll().heat[64], HEAT_MAX);
+        }
+    }
+
+    TEST(ShmSource, TwoReadersOfOneObjectAreIndependent) {
+        TestSegment segment(4096);
+        ASSERT_TRUE(segment.ready());
+        auto first = openOrFail(segment.name());
+        auto second = openOrFail(segment.name());
+        ASSERT_NE(first, nullptr);
+        ASSERT_NE(second, nullptr);
+
+        segment.write(0, std::byte{1});
+        EXPECT_EQ(first->poll().heat[0], HEAT_MAX);
+        EXPECT_EQ(first->poll().heat[0], HEAT_MAX - 1);
+
+        const auto frame = second->poll();
+        EXPECT_EQ(frame.sequence, 1U);
+        EXPECT_EQ(frame.bytes[0], std::byte{1});
+        EXPECT_EQ(frame.heat[0], HEAT_MAX);
+    }
+
+    TEST(ShmSource, NameAtTheLimitIsNotRejectedForLength) {
+        // Long enough to hit macOS's 31, short enough for Linux's 255: the
+        // open fails because nothing exists, not because of the length.
+        const std::string name = "/" + std::string(30, 'n');
+
+        auto source = ShmSource::open(name);
+
+        ASSERT_FALSE(source.has_value());
+        EXPECT_EQ(source.error().find("limit"), std::string::npos);
     }
 
     TEST(ShmSource, KeepsReadingAfterWriterUnlinks) {
