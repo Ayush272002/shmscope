@@ -94,6 +94,52 @@ namespace {
         EXPECT_EQ(screen().find("no such object"), std::string::npos);
     }
 
+    TEST_F(LauncherTest, EnterAgainResubmitsTheSameName) {
+        type("/fh.test");
+        press(ftxui::Event::Return);
+        press(ftxui::Event::Return);
+
+        ASSERT_EQ(submitted_.size(), 2U);
+        EXPECT_EQ(submitted_[1], "/fh.test");
+    }
+
+    TEST_F(LauncherTest, EscapeQuitsEvenWithTextTyped) {
+        type("/fh.test");
+        press(ftxui::Event::Escape);
+
+        EXPECT_EQ(quits_, 1);
+        EXPECT_TRUE(submitted_.empty());
+    }
+
+    TEST_F(LauncherTest, CursorKeysKeepTheError) {
+        type("/x");
+        launcher_.setError("no such object");
+        press(ftxui::Event::ArrowLeft);
+        press(ftxui::Event::ArrowRight);
+
+        EXPECT_NE(screen().find("no such object"), std::string::npos);
+    }
+
+    TEST_F(LauncherTest, NewErrorReplacesTheOld) {
+        launcher_.setError("first");
+        launcher_.setError("second");
+
+        EXPECT_EQ(screen().find("first"), std::string::npos);
+        EXPECT_NE(screen().find("second"), std::string::npos);
+    }
+
+    TEST_F(LauncherTest, CursorEditsInTheMiddleOfTheName) {
+        type("/fhtest");
+        for (int i = 0; i < 4; ++i) {
+            press(ftxui::Event::ArrowLeft);
+        }
+        type(".");
+        press(ftxui::Event::Return);
+
+        ASSERT_EQ(submitted_.size(), 1U);
+        EXPECT_EQ(submitted_.front(), "/fh.test");
+    }
+
     TEST_F(LauncherTest, TitleShowsVersion) {
         EXPECT_NE(screen().find("shmscope"), std::string::npos);
     }

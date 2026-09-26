@@ -56,7 +56,6 @@ namespace {
         std::mt19937 rng(static_cast<unsigned>(size));
         Buffers simd(size);
         for (std::size_t i = 0; i < size; ++i) {
-            // Few distinct values so roughly a quarter of bytes are equal.
             simd.mapping[i] = static_cast<std::byte>(rng() % 4);
             simd.previous[i] = static_cast<std::byte>(rng() % 4);
             simd.heat[i] = static_cast<std::uint8_t>(rng() % (HEAT_MAX + 1));
