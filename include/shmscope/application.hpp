@@ -9,9 +9,14 @@
 
 namespace shmscope {
 
+    struct Options {
+        std::optional<std::string> name;
+        int hz = 15;
+    };
+
     class Application {
     public:
-        Application();
+        explicit Application(Options options);
 
         Application(const Application&) = delete;
         Application& operator=(const Application&) = delete;
@@ -24,11 +29,11 @@ namespace shmscope {
     private:
         static constexpr int LAUNCHER = 0;
         static constexpr int VIEWER = 1;
-        static constexpr int REFRESH_HZ = 15;
 
-        void open(const std::string& name);
+        [[nodiscard]] std::optional<std::string> open(const std::string& name);
         void close();
 
+        Options options_;
         ftxui::App terminal_;
         int active_ = LAUNCHER;
         Launcher launcher_;
