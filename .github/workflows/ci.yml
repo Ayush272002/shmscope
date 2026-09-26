@@ -31,21 +31,6 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
-      - name: Configure Conan
-        run: |
-          conan profile detect --force
-          sed -i '' 's/compiler.cppstd=gnu17/compiler.cppstd=23/' ~/.conan2/profiles/default
-          conan profile show
-
-      - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-
-      - name: Build
-        run: cmake --build build
-
-      - name: Test
-        run: ctest --test-dir build --output-on-failure
-
   coverage:
     runs-on: ubuntu-latest
     steps:
