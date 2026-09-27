@@ -9,6 +9,8 @@
 #include <ftxui/component/event.hpp>
 #include <ftxui/dom/elements.hpp>
 
+#include "shmscope/recent.hpp"
+
 namespace shmscope {
 
     class Launcher {
@@ -16,7 +18,8 @@ namespace shmscope {
         using SubmitFn = std::function<void(const std::string& name)>;
         using QuitFn = std::function<void()>;
 
-        Launcher(SubmitFn onSubmit, QuitFn onQuit, int hz = 15);
+        Launcher(SubmitFn onSubmit, QuitFn onQuit, int hz = 15,
+                 const RecentList* recent = nullptr);
 
         Launcher(const Launcher&) = delete;
         Launcher& operator=(const Launcher&) = delete;
@@ -33,11 +36,18 @@ namespace shmscope {
         [[nodiscard]] ftxui::Element renderScope() const;
         [[nodiscard]] ftxui::Element renderWelcome() const;
         [[nodiscard]] static ftxui::Element renderTips();
+        [[nodiscard]] ftxui::Element renderRecent() const;
+        [[nodiscard]] bool hasRecent() const noexcept;
         bool onEvent(const ftxui::Event& event);
+        void cycleRecent(int step);
+
+        static constexpr int RECENT_SHOWN = 5;
 
         SubmitFn onSubmit_;
         QuitFn onQuit_;
         int hz_;
+        const RecentList* recent_;
+        int selected_ = -1;
         std::string platform_;
         std::string input_;
         std::string error_;
