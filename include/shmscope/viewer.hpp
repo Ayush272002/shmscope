@@ -42,6 +42,7 @@ namespace shmscope {
         static constexpr std::size_t FOLLOW_BLOCK_ROWS = 64;
         static constexpr std::size_t LIVE_RUN_ROWS = 6;
         static constexpr std::size_t LIVE_MERGE_ROWS = 2;
+        static constexpr int INSPECTOR_WIDTH = 30;
 
         struct LiveLine {
             enum class Kind : std::uint8_t { ROW, GAP, MORE };
@@ -61,6 +62,11 @@ namespace shmscope {
         void toBottom();
         void follow() noexcept;
 
+        void setCursor(std::size_t offset) noexcept;
+        void moveCursor(std::ptrdiff_t bytes) noexcept;
+        void scrollWithCursor(std::ptrdiff_t rows) noexcept;
+        [[nodiscard]] ftxui::Element renderInspector() const;
+
         [[nodiscard]] bool rowChanged(std::size_t row) const noexcept;
         void buildLive();
         [[nodiscard]] std::size_t liveMaxTop() const noexcept;
@@ -74,6 +80,7 @@ namespace shmscope {
         std::unique_ptr<Source> source_;
         Frame frame_{};
         std::size_t top_ = 0;
+        std::size_t cursor_ = 0;
         std::size_t visibleRows_ = 1;
         bool frozen_ = false;
         bool following_ = false;
