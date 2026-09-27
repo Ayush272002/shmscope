@@ -1,16 +1,18 @@
 #pragma once
 
+#include <optional>
 #include <string>
 
 #include <ftxui/component/app.hpp>
 
 #include "shmscope/launcher.hpp"
+#include "shmscope/recent.hpp"
 #include "shmscope/viewer.hpp"
 
 namespace shmscope {
 
     struct Options {
-        std::optional<std::string> name;
+        std::optional<std::string> name{};
         int hz = 15;
     };
 
@@ -34,6 +36,7 @@ namespace shmscope {
         void close();
 
         Options options_;
+        RecentList recent_;
         ftxui::App terminal_;
         int active_ = LAUNCHER;
         Launcher launcher_;

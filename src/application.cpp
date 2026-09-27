@@ -32,6 +32,7 @@ namespace shmscope {
 
     Application::Application(Options options)
         : options_(std::move(options)),
+          recent_(RecentList::defaultPath()),
           terminal_(ftxui::App::Fullscreen()),
           launcher_(
               [this](const std::string& name) {
@@ -39,7 +40,7 @@ namespace shmscope {
                       launcher_.setError(std::move(*error));
                   }
               },
-              [this] { terminal_.Exit(); }, options_.hz),
+              [this] { terminal_.Exit(); }, options_.hz, &recent_),
           viewer_(options_.hz, [this] { close(); }) {}
 
     int Application::run() {
@@ -102,6 +103,7 @@ namespace shmscope {
             return std::move(source.error());
         }
 
+        recent_.touch((*source)->name());
         viewer_.attach(std::move(*source));
         active_ = VIEWER;
         return std::nullopt;

@@ -47,10 +47,12 @@ namespace shmscope {
 
     }  // namespace
 
-    Launcher::Launcher(SubmitFn onSubmit, QuitFn onQuit, int hz)
+    Launcher::Launcher(SubmitFn onSubmit, QuitFn onQuit, int hz,
+                       const RecentList* recent)
         : onSubmit_(std::move(onSubmit)),
           onQuit_(std::move(onQuit)),
           hz_(hz),
+          recent_(recent),
           platform_(platformName()) {
         ftxui::InputOption option;
         option.multiline = false;
@@ -83,11 +85,40 @@ namespace shmscope {
             return true;
         }
 
+        if (event == ftxui::Event::ArrowDown) {
+            cycleRecent(1);
+            return true;
+        }
+
+        if (event == ftxui::Event::ArrowUp) {
+            cycleRecent(-1);
+            return true;
+        }
+
         if (event.is_character() || event == ftxui::Event::Backspace) {
             error_.clear();
+            selected_ = -1;
         }
 
         return false;
+    }
+
+    bool Launcher::hasRecent() const noexcept {
+        return recent_ != nullptr && !recent_->entries().empty();
+    }
+
+    void Launcher::cycleRecent(int step) {
+        if (!hasRecent()) {
+            return;
+        }
+        const auto entries = recent_->entries();
+        const int last =
+            std::min(static_cast<int>(entries.size()), RECENT_SHOWN) - 1;
+        selected_ = std::clamp(selected_ + step, -1, last);
+        input_ = selected_ < 0 ? std::string()
+                               : entries[static_cast<std::size_t>(selected_)];
+        cursor_ = static_cast<int>(input_.size());
+        error_.clear();
     }
 
     ftxui::Element Launcher::renderScope() const {
@@ -168,6 +199,30 @@ namespace shmscope {
         });
     }
 
+    ftxui::Element Launcher::renderRecent() const {
+        if (!hasRecent()) {
+            return ftxui::emptyElement();
+        }
+
+        ftxui::Elements lines;
+        lines.push_back(ftxui::text(" Recent") | ftxui::bold);
+
+        const auto entries = recent_->entries();
+        const auto shown =
+            std::min(entries.size(), static_cast<std::size_t>(RECENT_SHOWN));
+        for (std::size_t i = 0; i < shown; ++i) {
+            const bool selected = static_cast<int>(i) == selected_;
+            lines.push_back(ftxui::hbox({
+                ftxui::text(selected ? "  › " : "    ") | ftxui::color(ACCENT),
+                ftxui::text(entries[i]) |
+                    ftxui::color(selected ? ACCENT : ftxui::Color::Default),
+            }));
+        }
+        lines.push_back(ftxui::text(""));
+
+        return ftxui::vbox(std::move(lines));
+    }
+
     ftxui::Element Launcher::render() const {
         auto prompt = ftxui::hbox({
                           ftxui::text(" › ") | ftxui::color(ACCENT),
@@ -179,14 +234,18 @@ namespace shmscope {
                                     : ftxui::text("   " + error_) |
                                           ftxui::color(ftxui::Color::Red);
 
+        const auto* keys = hasRecent() ? "   ↑↓ recent · enter open · esc quit"
+                                       : "   enter open · esc quit";
+
         return ftxui::vbox({
             renderWelcome() | ftxui::yflex_shrink,
             ftxui::text("") | ftxui::yflex_shrink,
+            renderRecent() | ftxui::yflex_shrink,
             renderTips() | ftxui::yflex_shrink,
             ftxui::filler(),
             prompt,
             error,
-            ftxui::text("   enter open · esc quit") | ftxui::color(MUTED),
+            ftxui::text(keys) | ftxui::color(MUTED),
         });
     }
 

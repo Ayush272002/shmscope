@@ -1,6 +1,7 @@
 #include "shmscope/launcher.hpp"
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <ftxui/component/component_base.hpp>
@@ -142,6 +143,141 @@ namespace {
 
     TEST_F(LauncherTest, TitleShowsVersion) {
         EXPECT_NE(screen().find("shmscope"), std::string::npos);
+    }
+
+    TEST_F(LauncherTest, ArrowsDoNothingWithoutARecentList) {
+        type("/typed");
+        press(ftxui::Event::ArrowDown);
+        press(ftxui::Event::Return);
+
+        ASSERT_EQ(submitted_.size(), 1U);
+        EXPECT_EQ(submitted_.front(), "/typed");
+    }
+
+    class LauncherRecentTest : public ::testing::Test {
+    protected:
+        void SetUp() override {
+            for (const auto* name : {"/e", "/d", "/c", "/b", "/a"}) {
+                recent_.touch(name);
+            }
+        }
+
+        void type(const std::string& text) {
+            for (const char c : text) {
+                launcher_.component()->OnEvent(ftxui::Event::Character(c));
+            }
+        }
+
+        bool press(const ftxui::Event& event) {
+            return launcher_.component()->OnEvent(event);
+        }
+
+        std::string submitAfter(int downs) {
+            for (int i = 0; i < downs; ++i) {
+                press(ftxui::Event::ArrowDown);
+            }
+            press(ftxui::Event::Return);
+            return submitted_.empty() ? std::string() : submitted_.back();
+        }
+
+        std::string screen() {
+            auto screen = ftxui::Screen(80, 40);
+            ftxui::Render(screen, launcher_.component()->Render());
+            return screen.ToString();
+        }
+
+        bool shows(std::string_view text) {
+            return screen().find(text) != std::string::npos;
+        }
+
+        shmscope::RecentList recent_{{}};
+        std::vector<std::string> submitted_;
+        shmscope::Launcher launcher_{
+            [this](const std::string& name) { submitted_.push_back(name); },
+            [] {}, 15, &recent_};
+    };
+
+    TEST_F(LauncherRecentTest, ListsTheRecentNames) {
+        EXPECT_TRUE(shows("Recent"));
+        for (const auto* name : {"/a", "/b", "/c", "/d", "/e"}) {
+            EXPECT_TRUE(shows(name)) << name;
+        }
+        EXPECT_TRUE(shows("↑↓ recent"));
+    }
+
+    TEST_F(LauncherRecentTest, ArrowDownPicksTheNewest) {
+        EXPECT_EQ(submitAfter(1), "/a");
+    }
+
+    TEST_F(LauncherRecentTest, ArrowDownWalksTheList) {
+        EXPECT_EQ(submitAfter(3), "/c");
+    }
+
+    TEST_F(LauncherRecentTest, ArrowDownStopsAtTheLastShown) {
+        EXPECT_EQ(submitAfter(20), "/e");
+    }
+
+    TEST_F(LauncherRecentTest, ArrowUpFromTheFirstEmptiesTheBox) {
+        press(ftxui::Event::ArrowDown);
+        press(ftxui::Event::ArrowUp);
+        press(ftxui::Event::Return);
+
+        EXPECT_TRUE(submitted_.empty());
+    }
+
+    TEST_F(LauncherRecentTest, ArrowUpWalksBack) {
+        press(ftxui::Event::ArrowDown);
+        press(ftxui::Event::ArrowDown);
+        press(ftxui::Event::ArrowDown);
+        press(ftxui::Event::ArrowUp);
+
+        EXPECT_EQ(submitAfter(0), "/b");
+    }
+
+    TEST_F(LauncherRecentTest, APickedNameCanBeEditedBeforeOpening) {
+        press(ftxui::Event::ArrowDown);
+        type("x");
+        press(ftxui::Event::Return);
+
+        ASSERT_EQ(submitted_.size(), 1U);
+        EXPECT_EQ(submitted_.front(), "/ax");
+    }
+
+    TEST_F(LauncherRecentTest, TypingRestartsTheWalkFromTheTop) {
+        press(ftxui::Event::ArrowDown);
+        press(ftxui::Event::ArrowDown);
+        type("x");
+
+        EXPECT_EQ(submitAfter(1), "/a");
+    }
+
+    TEST_F(LauncherRecentTest, PickingClearsTheError) {
+        launcher_.setError("/gone: No such file or directory");
+        press(ftxui::Event::ArrowDown);
+
+        EXPECT_FALSE(shows("No such file"));
+    }
+
+    TEST_F(LauncherRecentTest, OnlyTheFiveNewestAreShown) {
+        recent_.touch("/f");
+
+        EXPECT_TRUE(shows("/f"));
+        EXPECT_FALSE(shows("/e"));
+        EXPECT_EQ(submitAfter(20), "/d");
+    }
+
+    TEST_F(LauncherRecentTest, ANameOpenedLaterShowsFirst) {
+        recent_.touch("/c");
+
+        EXPECT_EQ(submitAfter(1), "/c");
+    }
+
+    TEST_F(LauncherTest, NoRecentSectionWithoutARecentList) {
+        auto screen = ftxui::Screen(80, 40);
+        ftxui::Render(screen, launcher_.component()->Render());
+
+        EXPECT_EQ(screen.ToString().find("Recent"), std::string::npos);
+        EXPECT_EQ(screen.ToString().find("↑↓ recent"), std::string::npos);
     }
 
 }  // namespace
