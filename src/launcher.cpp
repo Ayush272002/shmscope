@@ -67,6 +67,7 @@ namespace shmscope {
 
         option.on_enter = [this] {
             if (!input_.empty()) {
+                selected_ = -1;
                 onSubmit_(input_);
             }
         };
