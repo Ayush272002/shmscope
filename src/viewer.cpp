@@ -18,6 +18,7 @@
 #include <ftxui/screen/color.hpp>
 #include <ftxui/screen/terminal.hpp>
 
+#include "shmscope/decode.hpp"
 #include "shmscope/source.hpp"
 
 namespace shmscope {
@@ -66,6 +67,7 @@ namespace shmscope {
     void Viewer::attach(std::unique_ptr<Source> source) {
         source_ = std::move(source);
         top_ = 0;
+        cursor_ = 0;
         followBlock_ = 0;
         following_ = false;
         frozen_ = false;
@@ -137,7 +139,7 @@ namespace shmscope {
         if (live_) {
             liveTop_ = 0;
         } else {
-            goTo(0);
+            setCursor(0);
         }
     }
 
@@ -145,9 +147,68 @@ namespace shmscope {
         if (live_) {
             buildLive();
             liveTop_ = liveMaxTop();
-        } else {
-            goTo(maxTop());
+        } else if (!frame_.bytes.empty()) {
+            setCursor(frame_.bytes.size() - 1);
         }
+    }
+
+    void Viewer::setCursor(std::size_t offset) noexcept {
+        following_ = false;
+        if (frame_.bytes.empty()) {
+            cursor_ = 0;
+            return;
+        }
+        cursor_ = std::min(offset, frame_.bytes.size() - 1);
+
+        const std::size_t row = cursor_ / BYTES_PER_ROW;
+        if (row < top_) {
+            top_ = row;
+        } else if (row >= top_ + visibleRows_) {
+            top_ = row - visibleRows_ + 1;
+        }
+    }
+
+    void Viewer::moveCursor(std::ptrdiff_t bytes) noexcept {
+        const auto target = static_cast<std::ptrdiff_t>(cursor_) + bytes;
+        setCursor(
+            static_cast<std::size_t>(std::max<std::ptrdiff_t>(target, 0)));
+    }
+
+    void Viewer::scrollWithCursor(std::ptrdiff_t rows) noexcept {
+        scrollBy(rows);
+        if (frame_.bytes.empty()) {
+            return;
+        }
+
+        const std::size_t row = cursor_ / BYTES_PER_ROW;
+        const std::size_t lastRow = (frame_.bytes.size() - 1) / BYTES_PER_ROW;
+        if ((rows < 0 && row == 0) || (rows > 0 && row == lastRow)) {
+            return;
+        }
+
+        moveCursor(rows * static_cast<std::ptrdiff_t>(BYTES_PER_ROW));
+    }
+
+    ftxui::Element Viewer::renderInspector() const {
+        const auto muted = ftxui::Color::RGB(110, 110, 110);
+
+        ftxui::Elements lines;
+        lines.push_back(ftxui::text(std::format(" cursor 0x{:x}", cursor_)) |
+                        ftxui::bold);
+        lines.push_back(ftxui::text(""));
+
+        for (const FieldType type : ALL_FIELD_TYPES) {
+            const auto value = decode(type, frame_.bytes, cursor_);
+            lines.push_back(ftxui::hbox({
+                ftxui::text(std::format(" {:<8}", nameOf(type))) |
+                    ftxui::color(muted),
+                value ? ftxui::text(*value)
+                      : ftxui::text("–") | ftxui::color(muted),
+            }));
+        }
+
+        return ftxui::vbox(std::move(lines)) |
+               ftxui::size(ftxui::WIDTH, ftxui::EQUAL, INSPECTOR_WIDTH);
     }
 
     bool Viewer::rowChanged(std::size_t row) const noexcept {
@@ -301,14 +362,26 @@ namespace shmscope {
         } else if (event == ftxui::Event::Character('f')) {
             following_ = !following_;
             live_ = live_ && !following_;  // follow belongs to the hex view
-        } else if (event == ftxui::Event::ArrowDown) {
+        } else if (live_ && event == ftxui::Event::ArrowDown) {
             scrollBy(1);
-        } else if (event == ftxui::Event::ArrowUp) {
+        } else if (live_ && event == ftxui::Event::ArrowUp) {
             scrollBy(-1);
-        } else if (event == ftxui::Event::PageDown) {
+        } else if (live_ && event == ftxui::Event::PageDown) {
             scrollBy(page);
-        } else if (event == ftxui::Event::PageUp) {
+        } else if (live_ && event == ftxui::Event::PageUp) {
             scrollBy(-page);
+        } else if (event == ftxui::Event::ArrowDown) {
+            scrollWithCursor(1);
+        } else if (event == ftxui::Event::ArrowUp) {
+            scrollWithCursor(-1);
+        } else if (event == ftxui::Event::PageDown) {
+            scrollWithCursor(page);
+        } else if (event == ftxui::Event::PageUp) {
+            scrollWithCursor(-page);
+        } else if (!live_ && event == ftxui::Event::ArrowRight) {
+            moveCursor(1);
+        } else if (!live_ && event == ftxui::Event::ArrowLeft) {
+            moveCursor(-1);
         } else if (event == ftxui::Event::Home) {
             toTop();
         } else if (event == ftxui::Event::End) {
@@ -335,10 +408,13 @@ namespace shmscope {
                 break;
             }
             const std::byte value = frame_.bytes[at];
-            cells.emplace_back(
-                ftxui::text(
-                    std::format("{:02x} ", std::to_integer<unsigned>(value))) |
-                ftxui::color(heatColor(frame_.heat[at], value)));
+            auto hex = ftxui::text(std::format(
+                           "{:02x}", std::to_integer<unsigned>(value))) |
+                       ftxui::color(heatColor(frame_.heat[at], value));
+            if (!live_ && at == cursor_) {
+                hex = hex | ftxui::inverted;
+            }
+            cells.emplace_back(ftxui::hbox({hex, ftxui::text(" ")}));
         }
 
         return ftxui::hbox(std::move(cells));
@@ -408,12 +484,19 @@ namespace shmscope {
                          "08 09 0a 0b 0c 0d 0e 0f") |
                      ftxui::dim;
 
-        auto pane =
-            ftxui::vbox({
-                ruler,
-                ftxui::vbox(std::move(rows)) | ftxui::yframe | ftxui::flex,
-            }) |
-            ftxui::borderRounded;
+        auto hex = ftxui::vbox({
+            ruler,
+            ftxui::vbox(std::move(rows)) | ftxui::yframe | ftxui::flex,
+        });
+
+        auto body = live_ ? hex
+                          : ftxui::hbox({
+                                hex | ftxui::flex,
+                                ftxui::separatorLight(),
+                                renderInspector(),
+                            });
+
+        auto pane = body | ftxui::borderRounded;
 
         return ftxui::vbox({
             ftxui::dbox({pane, title, caveat}) | ftxui::flex,
@@ -509,6 +592,7 @@ namespace shmscope {
         }
         live_ = false;
         goTo(*offset / BYTES_PER_ROW);
+        setCursor(*offset);
         return std::nullopt;
     }
 

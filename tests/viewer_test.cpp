@@ -68,6 +68,7 @@ namespace {
 
         int polls = 0;
         std::vector<std::uint8_t>& heat() { return heat_; }
+        std::vector<std::byte>& bytes() { return bytes_; }
 
     private:
         std::string name_;
@@ -156,6 +157,12 @@ namespace {
             const int gap = col >= 8 ? 1 : 0;
             const int x = 13 + static_cast<int>(col * 3) + gap;
             return draw().PixelAt(x, 2).foreground_color;
+        }
+
+        bool byteInverted(std::size_t col, int row = 0) {
+            const int gap = col >= 8 ? 1 : 0;
+            const int x = 13 + static_cast<int>(col * 3) + gap;
+            return draw().PixelAt(x, 2 + row).inverted;
         }
 
         int closes_ = 0;
@@ -955,6 +962,253 @@ namespace {
         }
         EXPECT_FALSE(shows(rowLabel(0x40)));
         EXPECT_TRUE(shows(rowLabel(0x80)));
+    }
+
+    TEST_F(ViewerTest, CursorStartsOnTheFirstByte) {
+        attach(4096);
+
+        EXPECT_TRUE(shows("cursor 0x0 "));
+        EXPECT_TRUE(byteInverted(0));
+        EXPECT_FALSE(byteInverted(1));
+    }
+
+    TEST_F(ViewerTest, InspectorDecodesTheBytesAtTheCursor) {
+        attach(4096);
+
+        EXPECT_TRUE(shows("u8      0 "));
+        EXPECT_TRUE(shows("u16     256 "));
+        EXPECT_TRUE(shows("u64     506097522914230528"));
+        EXPECT_TRUE(shows("ascii   ........"));
+    }
+
+    TEST_F(ViewerTest, InspectorListsEveryType) {
+        attach(4096);
+
+        for (const auto* name :
+             {"u8 ", "u16 ", "u32 ", "u64 ", "i8 ", "i16 ", "i32 ", "i64 ",
+              "f32 ", "f64 ", "fixed8 ", "ascii "}) {
+            EXPECT_TRUE(shows(name)) << name;
+        }
+    }
+
+    TEST_F(ViewerTest, ArrowRightAndLeftMoveTheCursorOneByte) {
+        attach(4096);
+
+        press(ftxui::Event::ArrowRight);
+        EXPECT_TRUE(shows("cursor 0x1 "));
+        EXPECT_TRUE(shows("u8      1 "));
+        EXPECT_TRUE(byteInverted(1));
+        EXPECT_FALSE(byteInverted(0));
+
+        press(ftxui::Event::ArrowLeft);
+        EXPECT_TRUE(shows("cursor 0x0 "));
+    }
+
+    TEST_F(ViewerTest, ArrowRightCrossesIntoTheSecondHalfOfTheRow) {
+        attach(4096);
+
+        for (int i = 0; i < 8; ++i) {
+            press(ftxui::Event::ArrowRight);
+        }
+        EXPECT_TRUE(byteInverted(8));
+        EXPECT_TRUE(shows("u8      8 "));
+    }
+
+    TEST_F(ViewerTest, ArrowRightWrapsToTheNextRow) {
+        attach(4096);
+        draw();
+
+        for (int i = 0; i < 16; ++i) {
+            press(ftxui::Event::ArrowRight);
+        }
+        EXPECT_TRUE(shows("cursor 0x10 "));
+        EXPECT_TRUE(byteInverted(0, 1));
+    }
+
+    TEST_F(ViewerTest, ArrowLeftAtTheStartStaysPut) {
+        attach(4096);
+
+        press(ftxui::Event::ArrowLeft);
+        EXPECT_TRUE(shows("cursor 0x0 "));
+        EXPECT_TRUE(byteInverted(0));
+    }
+
+    TEST_F(ViewerTest, ArrowDownScrollsAndCarriesTheCursor) {
+        attach(1 << 16);
+        draw();
+        press(ftxui::Event::ArrowRight);
+        press(ftxui::Event::ArrowRight);
+
+        press(ftxui::Event::ArrowDown);
+        EXPECT_EQ(firstRow(), 0x10U);
+        EXPECT_TRUE(shows("cursor 0x12 "));
+        EXPECT_TRUE(byteInverted(2));
+    }
+
+    TEST_F(ViewerTest, ArrowUpAtTheTopMovesTheCursorUpARow) {
+        attach(1 << 16);
+        draw();
+        for (int i = 0; i < 0x23; ++i) {
+            press(ftxui::Event::ArrowRight);
+        }
+
+        press(ftxui::Event::ArrowUp);
+        EXPECT_EQ(firstRow(), 0U);
+        EXPECT_TRUE(shows("cursor 0x13 "));
+        EXPECT_TRUE(byteInverted(3, 1));
+    }
+
+    TEST_F(ViewerTest, PageDownCarriesTheCursorAPage) {
+        attach(1 << 20);
+        draw();
+
+        press(ftxui::Event::PageDown);
+        EXPECT_EQ(firstRow(), visibleRows() * 16);
+        EXPECT_TRUE(shows(std::format("cursor 0x{:x} ", visibleRows() * 16)));
+        EXPECT_TRUE(byteInverted(0));
+    }
+
+    TEST_F(ViewerTest, ArrowDownAtTheEndStopsOnTheLastRow) {
+        attach(64);
+        draw();
+
+        for (int i = 0; i < 10; ++i) {
+            press(ftxui::Event::ArrowDown);
+        }
+        EXPECT_TRUE(shows("cursor 0x30 "));
+    }
+
+    TEST_F(ViewerTest, ArrowDownOnTheLastRowKeepsTheColumn) {
+        attach(64);
+        draw();
+        command("jump 35");
+
+        press(ftxui::Event::ArrowDown);
+        EXPECT_TRUE(shows("cursor 0x35 "));
+    }
+
+    TEST_F(ViewerTest, ArrowUpOnTheFirstRowKeepsTheColumn) {
+        attach(64);
+        draw();
+        command("jump 5");
+
+        press(ftxui::Event::ArrowUp);
+        EXPECT_TRUE(shows("cursor 0x5 "));
+    }
+
+    TEST_F(ViewerTest, ArrowDownIntoAShortLastRowStopsOnTheLastByte) {
+        attach(40);
+        draw();
+        command("jump 1c");
+
+        press(ftxui::Event::ArrowDown);
+        EXPECT_TRUE(shows("cursor 0x27 "));
+    }
+
+    TEST_F(ViewerTest, EndPutsTheCursorOnTheLastByte) {
+        attach(4096);
+        draw();
+
+        press(ftxui::Event::End);
+        EXPECT_TRUE(shows("cursor 0xfff "));
+        EXPECT_TRUE(shows("u8      255 "));
+    }
+
+    TEST_F(ViewerTest, ValuesRunningPastTheEndShowADash) {
+        attach(4096);
+        draw();
+
+        press(ftxui::Event::End);
+        EXPECT_TRUE(shows("u16     –"));
+        EXPECT_TRUE(shows("u64     –"));
+        EXPECT_TRUE(shows("ascii   –"));
+    }
+
+    TEST_F(ViewerTest, HomeReturnsTheCursorToTheStart) {
+        attach(1 << 16);
+        draw();
+        press(ftxui::Event::End);
+
+        press(ftxui::Event::Home);
+        EXPECT_EQ(firstRow(), 0U);
+        EXPECT_TRUE(shows("cursor 0x0 "));
+    }
+
+    TEST_F(ViewerTest, JumpPutsTheCursorOnTheExactByte) {
+        attach(1 << 16);
+        draw();
+
+        command("jump 1234");
+        EXPECT_EQ(firstRow(), 0x1230U);
+        EXPECT_TRUE(shows("cursor 0x1234 "));
+        EXPECT_TRUE(shows("u8      52 "));
+        EXPECT_TRUE(byteInverted(4));
+    }
+
+    TEST_F(ViewerTest, JumpNearTheEndKeepsTheCursorOnScreen) {
+        attach(1 << 16);
+        draw();
+
+        command("jump fff8");
+        EXPECT_TRUE(shows("cursor 0xfff8 "));
+        EXPECT_TRUE(shows(rowLabel(0xfff0)));
+    }
+
+    TEST_F(ViewerTest, MovingTheCursorStopsFollowing) {
+        attach(4096);
+        command("follow");
+        EXPECT_TRUE(shows("following"));
+
+        press(ftxui::Event::ArrowRight);
+        EXPECT_FALSE(shows("following"));
+    }
+
+    TEST_F(ViewerTest, InspectorTracksLiveChangesAtTheCursor) {
+        auto& fake = attach(4096);
+        EXPECT_TRUE(shows("u8      0 "));
+
+        fake.bytes()[0] = std::byte{0x2a};
+        viewer_.tick();
+        EXPECT_TRUE(shows("u8      42 "));
+    }
+
+    TEST_F(ViewerTest, LiveHidesTheCursorAndInspector) {
+        auto& fake = attach(4096);
+        fake.heat()[0] = HEAT_MAX;
+        viewer_.tick();
+
+        command("live");
+        EXPECT_FALSE(shows("cursor 0x"));
+        EXPECT_FALSE(byteInverted(0));
+    }
+
+    TEST_F(ViewerTest, LeftAndRightDoNothingInLive) {
+        attach(4096);
+        command("live");
+
+        EXPECT_FALSE(press(ftxui::Event::ArrowRight));
+        EXPECT_FALSE(press(ftxui::Event::ArrowLeft));
+
+        command("hex");
+        EXPECT_TRUE(shows("cursor 0x0 "));
+    }
+
+    TEST_F(ViewerTest, AttachingResetsTheCursor) {
+        attach(4096);
+        command("jump 100");
+        EXPECT_TRUE(shows("cursor 0x100 "));
+
+        attach(4096);
+        EXPECT_TRUE(shows("cursor 0x0 "));
+    }
+
+    TEST_F(ViewerTest, EmptySourceShowsNoValues) {
+        attach(0);
+
+        press(ftxui::Event::ArrowRight);
+        press(ftxui::Event::End);
+        EXPECT_TRUE(shows("cursor 0x0 "));
+        EXPECT_TRUE(shows("u8      –"));
     }
 
 }  // namespace
