@@ -52,12 +52,10 @@ find_package(CLI11 CONFIG REQUIRED)
 find_package(highway CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 
-target_link_libraries(shmscope_core PUBLIC
+target_link_libraries(shmscope_core PRIVATE
         ftxui::screen
         ftxui::dom
         ftxui::component
-)
-target_link_libraries(shmscope_core PRIVATE
         highway::highway
         shmscope::warnings
         shmscope::sanitizers
@@ -70,6 +68,7 @@ target_include_directories(shmscope_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
 add_executable(shmscope main.cpp)
 target_link_libraries(shmscope PRIVATE
         shmscope_core
+        ftxui::component
         shmscope::warnings
         shmscope::sanitizers
         CLI11::CLI11
@@ -92,10 +91,10 @@ if(SHMSCOPE_BUILD_TESTS)
     enable_testing()
     find_package(GTest CONFIG REQUIRED)
 
-    file(GLOB TEST_SOURCES CONFIGURE_DEPENDS tests/*.cpp)
+    file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS tests/*.cpp)
     if(TEST_SOURCES)
         add_executable(shmscope_tests ${TEST_SOURCES})
-        target_link_libraries(shmscope_tests PRIVATE shmscope_core highway::highway shmscope::warnings shmscope::sanitizers GTest::gtest_main)
+        target_link_libraries(shmscope_tests PRIVATE shmscope_core ftxui::component highway::highway shmscope::warnings shmscope::sanitizers GTest::gtest_main)
 
         target_include_directories(shmscope_tests PRIVATE
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests")
