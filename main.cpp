@@ -2,7 +2,7 @@
 
 #include <CLI/CLI.hpp>
 
-#include "shmscope/application.hpp"
+#include "shmscope/ui/application.hpp"
 #include "shmscope/version.hpp"
 
 int main(const int argc, char** argv) {
