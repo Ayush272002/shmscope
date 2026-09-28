@@ -50,6 +50,7 @@ find_package(ftxui CONFIG REQUIRED)
 find_package(yaml-cpp CONFIG REQUIRED)
 find_package(CLI11 CONFIG REQUIRED)
 find_package(highway CONFIG REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
 
 target_link_libraries(shmscope_core PUBLIC
         ftxui::screen
@@ -61,6 +62,7 @@ target_link_libraries(shmscope_core PRIVATE
         shmscope::warnings
         shmscope::sanitizers
         yaml-cpp::yaml-cpp
+        nlohmann_json::nlohmann_json
 )
 
 target_include_directories(shmscope_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
