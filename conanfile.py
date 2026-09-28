@@ -28,6 +28,7 @@ class ShmscopeConan(ConanFile):
         self.requires("yaml-cpp/0.9.0")
         self.requires("cli11/2.5.0")
         self.requires("highway/1.4.0")
+        self.requires("nlohmann_json/3.12.0")
 
     def build_requirements(self):
         self.test_requires("gtest/1.17.0")
