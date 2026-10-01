@@ -984,11 +984,11 @@ namespace {
     TEST_F(ViewerTest, InspectorListsEveryType) {
         attach(4096);
 
-        for (const auto* name :
-             {"u8 ", "u16 ", "u32 ", "u64 ", "i8 ", "i16 ", "i32 ", "i64 ",
-              "f32 ", "f64 ", "fixed8 ", "ascii "}) {
+        for (const auto* name : {"u8 ", "u16 ", "u32 ", "u64 ", "i8 ", "i16 ",
+                                 "i32 ", "i64 ", "f32 ", "f64 ", "ascii "}) {
             EXPECT_TRUE(shows(name)) << name;
         }
+        EXPECT_FALSE(shows("fixed8"));
     }
 
     TEST_F(ViewerTest, ArrowRightAndLeftMoveTheCursorOneByte) {
