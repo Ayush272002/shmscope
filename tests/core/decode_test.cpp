@@ -9,6 +9,8 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
+#include <variant>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -62,8 +64,99 @@ namespace {
         EXPECT_EQ(widthOf(FieldType::U64), 8U);
         EXPECT_EQ(widthOf(FieldType::I64), 8U);
         EXPECT_EQ(widthOf(FieldType::F64), 8U);
-        EXPECT_EQ(widthOf(FieldType::FIXED8), 8U);
         EXPECT_EQ(widthOf(FieldType::ASCII), shmscope::ASCII_WIDTH);
+    }
+
+    static_assert(nameOf(FieldType::U16) == "u16");
+    static_assert(nameOf(FieldType::ASCII) == "ascii");
+    static_assert(widthOf(FieldType::I32) == 4);
+    static_assert(widthOf(FieldType::F64) == 8);
+    static_assert(widthOf(FieldType::ASCII) == shmscope::ASCII_WIDTH);
+    static_assert(std::is_same_v<shmscope::FieldTraits<FieldType::I16>::type,
+                                 std::int16_t>);
+    static_assert(
+        std::is_same_v<shmscope::FieldTraits<FieldType::F32>::type, float>);
+
+    TEST(DispatchTest, CallsTheBranchForTheRuntimeType) {
+        for (const FieldType type : ALL_FIELD_TYPES) {
+            const auto name = shmscope::dispatch(
+                type, []<FieldType T>(shmscope::FieldTag<T>) {
+                    return shmscope::FieldTraits<T>::NAME;
+                });
+            EXPECT_EQ(name, nameOf(type));
+        }
+    }
+
+    TEST(DispatchTest, TheTagCarriesTheStorageType) {
+        const auto size = shmscope::dispatch(
+            FieldType::U32, []<FieldType T>(shmscope::FieldTag<T>) {
+                using Storage = typename shmscope::FieldTraits<T>::type;
+                if constexpr (std::is_arithmetic_v<Storage>) {
+                    return sizeof(Storage);
+                } else {
+                    return std::size_t{0};
+                }
+            });
+        EXPECT_EQ(size, sizeof(std::uint32_t));
+    }
+
+    TEST(ReadTest, UnsignedIntegersAreUnsignedValues) {
+        const auto value =
+            shmscope::read(FieldType::U16, encode<std::uint16_t>(65535), 0);
+
+        ASSERT_TRUE(value.has_value());
+        ASSERT_TRUE(std::holds_alternative<std::uint64_t>(value->data));
+        EXPECT_EQ(std::get<std::uint64_t>(value->data), 65535U);
+        EXPECT_EQ(value->width, 2U);
+    }
+
+    TEST(ReadTest, SignedIntegersAreSignExtended) {
+        const auto value =
+            shmscope::read(FieldType::I8, encode<std::int8_t>(-5), 0);
+
+        ASSERT_TRUE(value.has_value());
+        ASSERT_TRUE(std::holds_alternative<std::int64_t>(value->data));
+        EXPECT_EQ(std::get<std::int64_t>(value->data), -5);
+        EXPECT_EQ(value->width, 1U);
+    }
+
+    TEST(ReadTest, FloatsBecomeDoubles) {
+        const auto value = shmscope::read(FieldType::F32, encode(0.5F), 0);
+
+        ASSERT_TRUE(value.has_value());
+        ASSERT_TRUE(std::holds_alternative<double>(value->data));
+        EXPECT_EQ(std::get<double>(value->data), 0.5);
+        EXPECT_EQ(value->width, 4U);
+    }
+
+    TEST(ReadTest, AsciiBecomesText) {
+        const auto data = bytes({'s', 'h', 'm', 0x00, 'x', 'y', 'z', '!'});
+        const auto value = shmscope::read(FieldType::ASCII, data, 0);
+
+        ASSERT_TRUE(value.has_value());
+        ASSERT_TRUE(std::holds_alternative<std::string>(value->data));
+        EXPECT_EQ(std::get<std::string>(value->data), "shm.xyz!");
+        EXPECT_EQ(value->width, shmscope::ASCII_WIDTH);
+    }
+
+    TEST(ReadTest, OutOfRangeReadsNothing) {
+        const auto data = bytes({0x01, 0x02});
+
+        EXPECT_FALSE(shmscope::read(FieldType::U32, data, 0).has_value());
+        EXPECT_FALSE(shmscope::read(FieldType::U8, data, 2).has_value());
+    }
+
+    TEST(ToTextTest, EachKindOfValue) {
+        using shmscope::Value;
+
+        EXPECT_EQ(shmscope::toText(Value{.data = std::uint64_t{7}, .width = 1}),
+                  "7");
+        EXPECT_EQ(shmscope::toText(Value{.data = std::int64_t{-7}, .width = 1}),
+                  "-7");
+        EXPECT_EQ(shmscope::toText(Value{.data = 0.25, .width = 8}), "0.25");
+        EXPECT_EQ(
+            shmscope::toText(Value{.data = std::string("abc"), .width = 3}),
+            "abc");
     }
 
     TEST(DecodeTest, UnsignedIntegersAreLittleEndian) {
@@ -114,35 +207,6 @@ namespace {
             bytes({0xcc, 0x20, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00});
 
         EXPECT_EQ(at(FieldType::U64, data), "139468");
-    }
-
-    TEST(DecodeTest, Fixed8ScalesByOneHundredMillion) {
-        EXPECT_EQ(
-            at(FieldType::FIXED8, encode<std::int64_t>(8'145'200'000'000)),
-            "81452.00000000");
-        EXPECT_EQ(at(FieldType::FIXED8, encode<std::int64_t>(271'179'000'000)),
-                  "2711.79000000");
-        EXPECT_EQ(at(FieldType::FIXED8, encode<std::int64_t>(1)), "0.00000001");
-        EXPECT_EQ(at(FieldType::FIXED8, encode<std::int64_t>(0)), "0.00000000");
-    }
-
-    TEST(DecodeTest, Fixed8Negative) {
-        EXPECT_EQ(at(FieldType::FIXED8, encode<std::int64_t>(-150'000'000)),
-                  "-1.50000000");
-        EXPECT_EQ(at(FieldType::FIXED8, encode<std::int64_t>(-1)),
-                  "-0.00000001");
-    }
-
-    TEST(DecodeTest, Fixed8MinimumDoesNotOverflow) {
-        EXPECT_EQ(at(FieldType::FIXED8,
-                     encode(std::numeric_limits<std::int64_t>::min())),
-                  "-92233720368.54775808");
-    }
-
-    TEST(DecodeTest, Fixed8IsExactWhereDoubleWouldRound) {
-        EXPECT_EQ(at(FieldType::FIXED8,
-                     encode<std::int64_t>(123'456'789'012'345'678)),
-                  "1234567890.12345678");
     }
 
     TEST(DecodeTest, Floats) {

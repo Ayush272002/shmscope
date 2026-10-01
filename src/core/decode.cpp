@@ -10,34 +10,31 @@ namespace shmscope {
 
         static_assert(std::endian::native == std::endian::little);
 
+        template <FieldType T>
+        constexpr bool widthMatchesStorage() {
+            using Storage = typename FieldTraits<T>::type;
+            if constexpr (std::is_arithmetic_v<Storage>) {
+                return FieldTraits<T>::WIDTH == sizeof(Storage);
+            } else {
+                return true;
+            }
+        }
+
+        template <std::size_t... Is>
+        constexpr bool allWidthsMatch(std::index_sequence<Is...>) {
+            return (widthMatchesStorage<ALL_FIELD_TYPES[Is]>() && ...);
+        }
+
+        static_assert(
+            allWidthsMatch(std::make_index_sequence<ALL_FIELD_TYPES.size()>{}),
+            "a FieldTraits WIDTH disagrees with its storage type");
+
         template <typename T>
         T load(std::span<const std::byte> bytes, std::size_t offset) {
             T value{};
             std::memcpy(&value, bytes.subspan(offset, sizeof(T)).data(),
                         sizeof(T));
             return value;
-        }
-
-        template <typename T>
-        std::string integer(std::span<const std::byte> bytes,
-                            std::size_t offset) {
-            const T value = load<T>(bytes, offset);
-            if constexpr (sizeof(T) == 1)
-                return std::format("{}", static_cast<int>(value));
-            else
-                return std::format("{}", value);
-        }
-
-        std::string fixed8(std::span<const std::byte> bytes,
-                           std::size_t offset) {
-            const auto value = load<std::int64_t>(bytes, offset);
-            const auto magnitude = value < 0
-                                       ? 0 - static_cast<std::uint64_t>(value)
-                                       : static_cast<std::uint64_t>(value);
-
-            constexpr auto scale = static_cast<std::uint64_t>(FIXED8_SCALE);
-            return std::format("{}{}.{:08}", value < 0 ? "-" : "",
-                               magnitude / scale, magnitude % scale);
         }
 
         std::string ascii(std::span<const std::byte> bytes,
@@ -53,93 +50,56 @@ namespace shmscope {
 
     }  // namespace
 
-    std::string_view nameOf(FieldType type) noexcept {
-        switch (type) {
-            case FieldType::U8:
-                return "u8";
-            case FieldType::U16:
-                return "u16";
-            case FieldType::U32:
-                return "u32";
-            case FieldType::U64:
-                return "u64";
-            case FieldType::I8:
-                return "i8";
-            case FieldType::I16:
-                return "i16";
-            case FieldType::I32:
-                return "i32";
-            case FieldType::I64:
-                return "i64";
-            case FieldType::F32:
-                return "f32";
-            case FieldType::F64:
-                return "f64";
-            case FieldType::FIXED8:
-                return "fixed8";
-            case FieldType::ASCII:
-                return "ascii";
+    std::optional<Value> read(FieldType type, std::span<const std::byte> bytes,
+                              std::size_t offset) {
+        if (offset > bytes.size() || bytes.size() - offset < widthOf(type)) {
+            return std::nullopt;
         }
-        return "?";
+
+        return dispatch(
+            type, [&]<FieldType T>(FieldTag<T>) -> std::optional<Value> {
+                using Traits = FieldTraits<T>;
+                using Storage = typename Traits::type;
+
+                if constexpr (std::is_same_v<Storage, AsciiText>) {
+                    return Value{.data = ascii(bytes, offset),
+                                 .width = Traits::WIDTH};
+                } else if constexpr (std::is_floating_point_v<Storage>) {
+                    return Value{.data = static_cast<double>(
+                                     load<Storage>(bytes, offset)),
+                                 .width = Traits::WIDTH};
+                } else if constexpr (std::is_signed_v<Storage>) {
+                    return Value{.data = static_cast<std::int64_t>(
+                                     load<Storage>(bytes, offset)),
+                                 .width = Traits::WIDTH};
+                } else {
+                    return Value{.data = static_cast<std::uint64_t>(
+                                     load<Storage>(bytes, offset)),
+                                 .width = Traits::WIDTH};
+                }
+            });
     }
 
-    std::size_t widthOf(FieldType type) noexcept {
-        switch (type) {
-            case FieldType::U8:
-            case FieldType::I8:
-                return 1;
-            case FieldType::U16:
-            case FieldType::I16:
-                return 2;
-            case FieldType::U32:
-            case FieldType::I32:
-            case FieldType::F32:
-                return 4;
-            case FieldType::U64:
-            case FieldType::I64:
-            case FieldType::F64:
-            case FieldType::FIXED8:
-                return 8;
-            case FieldType::ASCII:
-                return ASCII_WIDTH;
-        }
-        return 0;
+    std::string toText(const Value& value) {
+        return std::visit(
+            []<typename T>(const T& data) -> std::string {
+                if constexpr (std::is_same_v<T, std::string>)
+                    return data;
+                else if constexpr (std::is_same_v<T, double>)
+                    return std::format("{:.6g}", data);
+                else
+                    return std::format("{}", data);
+            },
+            value.data);
     }
 
     std::optional<std::string> decode(FieldType type,
                                       std::span<const std::byte> bytes,
                                       std::size_t offset) {
-        if (offset > bytes.size() || bytes.size() - offset < widthOf(type)) {
-            return std::nullopt;
-        }
+        const auto value = read(type, bytes, offset);
+        if (!value) return std::nullopt;
 
-        switch (type) {
-            case FieldType::U8:
-                return integer<std::uint8_t>(bytes, offset);
-            case FieldType::U16:
-                return integer<std::uint16_t>(bytes, offset);
-            case FieldType::U32:
-                return integer<std::uint32_t>(bytes, offset);
-            case FieldType::U64:
-                return integer<std::uint64_t>(bytes, offset);
-            case FieldType::I8:
-                return integer<std::int8_t>(bytes, offset);
-            case FieldType::I16:
-                return integer<std::int16_t>(bytes, offset);
-            case FieldType::I32:
-                return integer<std::int32_t>(bytes, offset);
-            case FieldType::I64:
-                return integer<std::int64_t>(bytes, offset);
-            case FieldType::F32:
-                return std::format("{:.6g}", load<float>(bytes, offset));
-            case FieldType::F64:
-                return std::format("{:.6g}", load<double>(bytes, offset));
-            case FieldType::FIXED8:
-                return fixed8(bytes, offset);
-            case FieldType::ASCII:
-                return ascii(bytes, offset);
-        }
-        return std::nullopt;
+        return toText(*value);
     }
 
 }  // namespace shmscope
