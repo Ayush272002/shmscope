@@ -39,7 +39,8 @@ namespace shmscope {
                   if (!layout) return std::unexpected(describe(layout.error()));
 
                   return std::move(*layout);
-              }) {}
+              },
+              [](std::string_view name) { return ShmSource::open(name); }) {}
 
     int Application::run() {
         if (options_.layout) {

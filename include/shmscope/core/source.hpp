@@ -20,6 +20,8 @@ namespace shmscope {
         std::uint64_t sequence = 0;
     };
 
+    enum class SourceState : std::uint8_t { LIVE, REMOVED, REPLACED };
+
     class Source {
     public:
         Source() = default;
@@ -32,6 +34,10 @@ namespace shmscope {
         [[nodiscard]] virtual std::string_view name() const noexcept = 0;
 
         [[nodiscard]] virtual Frame poll() noexcept = 0;
+
+        [[nodiscard]] virtual SourceState state() const noexcept {
+            return SourceState::LIVE;
+        }
     };
 
     using OpenResult = std::expected<std::unique_ptr<Source>, std::string>;

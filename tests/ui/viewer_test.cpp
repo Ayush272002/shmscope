@@ -37,6 +37,7 @@ namespace {
     using shmscope::HEAT_MAX;
     using shmscope::Layout;
     using shmscope::Source;
+    using shmscope::SourceState;
     using shmscope::Viewer;
 
     constexpr std::string_view COUNTED = R"(meta: {id: counted, endian: le}
@@ -132,7 +133,12 @@ seq:
                          .sequence = static_cast<std::uint64_t>(polls)};
         }
 
+        [[nodiscard]] SourceState state() const noexcept override {
+            return currentState;
+        }
+
         int polls = 0;
+        SourceState currentState = SourceState::LIVE;
         std::vector<std::uint8_t>& heat() { return heat_; }
         std::vector<std::byte>& bytes() { return bytes_; }
 
@@ -257,6 +263,7 @@ seq:
         int closes_ = 0;
         bool destroyed_ = false;
         Viewer::LayoutLoader loadWith_{};
+        shmscope::SourceOpener openWith_{};
         Viewer viewer_{HZ, [this] { ++closes_; },
                        [this](const std::filesystem::path& file)
                            -> std::expected<Layout, std::string> {
@@ -265,6 +272,13 @@ seq:
                                    std::string("no loader in this test"));
                            }
                            return loadWith_(file);
+                       },
+                       [this](std::string_view name) -> shmscope::OpenResult {
+                           if (!openWith_) {
+                               return std::unexpected(
+                                   std::string("no opener in this test"));
+                           }
+                           return openWith_(name);
                        }};
     };
 
@@ -601,8 +615,8 @@ seq:
         attach(1 << 20);
         press(ftxui::Event::Character('/'));
 
-        EXPECT_FALSE(shows(rowLabel((visibleRows() - 8) * 16)));
-        EXPECT_TRUE(shows(rowLabel((visibleRows() - 9) * 16)));
+        EXPECT_FALSE(shows(rowLabel((visibleRows() - 9) * 16)));
+        EXPECT_TRUE(shows(rowLabel((visibleRows() - 10) * 16)));
     }
 
     TEST_F(ViewerTest, ListsAllCommands) {
@@ -2166,6 +2180,135 @@ seq:
         attach(64);
 
         EXPECT_FALSE(shows("tracking"));
+    }
+
+    TEST_F(ViewerTest, ALiveSegmentShowsNoWarning) {
+        attach(64);
+
+        EXPECT_FALSE(shows("removed"));
+        EXPECT_FALSE(shows("recreated"));
+    }
+
+    TEST_F(ViewerTest, ARemovedSegmentSaysSo) {
+        auto& fake = attach(64);
+        fake.currentState = SourceState::REMOVED;
+        viewer_.tick();
+
+        EXPECT_TRUE(shows(" removed · showing the last data "));
+        EXPECT_TRUE(shows("live"));
+    }
+
+    TEST_F(ViewerTest, ARecreatedSegmentOffersReopen) {
+        auto& fake = attach(64);
+        fake.currentState = SourceState::REPLACED;
+        viewer_.tick();
+
+        EXPECT_TRUE(shows(" recreated · /reopen "));
+    }
+
+    TEST_F(ViewerTest, ReopenAttachesWhatTheNameOpensNow) {
+        attach(64, "/seg");
+        std::string asked;
+        bool destroyed = false;
+        openWith_ = [&](std::string_view name) -> shmscope::OpenResult {
+            asked = std::string(name);
+            return std::make_unique<FakeSource>("/seg", 128, &destroyed);
+        };
+
+        command("reopen");
+
+        EXPECT_EQ(asked, "/seg");
+        EXPECT_TRUE(destroyed_);
+        EXPECT_TRUE(shows("128 bytes"));
+    }
+
+    TEST_F(ViewerTest, ReopenKeepsTheCursor) {
+        attach(4096);
+        draw();
+        command("jump 123");
+        openWith_ = [](std::string_view name) -> shmscope::OpenResult {
+            return std::make_unique<FakeSource>(std::string(name), 4096,
+                                                nullptr);
+        };
+
+        command("reopen");
+
+        EXPECT_TRUE(shows("cursor 0x123 "));
+    }
+
+    TEST_F(ViewerTest, ReopenClampsTheCursorToASmallerSegment) {
+        attach(4096);
+        draw();
+        command("jump ff0");
+        openWith_ = [](std::string_view name) -> shmscope::OpenResult {
+            return std::make_unique<FakeSource>(std::string(name), 32, nullptr);
+        };
+
+        command("reopen");
+
+        EXPECT_TRUE(shows("cursor 0x1f "));
+    }
+
+    TEST_F(ViewerTest, ReopenKeepsTheLayoutAndTracking) {
+        attach(64 * 1024);
+        viewer_.setLayout(layoutFrom(MOVING));
+        command("field item");
+        openWith_ = [](std::string_view name) -> shmscope::OpenResult {
+            return std::make_unique<FakeSource>(std::string(name), 64 * 1024,
+                                                nullptr);
+        };
+
+        command("reopen");
+
+        EXPECT_TRUE(shows(" moving · "));
+        EXPECT_TRUE(shows(" tracking item "));
+    }
+
+    TEST_F(ViewerTest, AFailedReopenKeepsTheOldSegment) {
+        attach(64, "/kept");
+        openWith_ = [](std::string_view) -> shmscope::OpenResult {
+            return std::unexpected(std::string("/kept: No such file"));
+        };
+
+        command("reopen");
+
+        EXPECT_TRUE(shows("/kept: No such file"));
+        EXPECT_FALSE(destroyed_);
+        EXPECT_TRUE(shows("64 bytes"));
+    }
+
+    TEST_F(ViewerTest, ReopenNeedsAnOpenSegment) {
+        command("reopen");
+
+        EXPECT_TRUE(shows("unknown command /reopen"));
+    }
+
+    TEST_F(ViewerTest, ReopenNeedsAnOpener) {
+        Viewer bare{HZ, [] {}};
+        bare.attach(std::make_unique<FakeSource>("/bare", 64, nullptr));
+        bare.component()->OnEvent(ftxui::Event::Character('/'));
+        for (const char c : std::string_view("reopen")) {
+            bare.component()->OnEvent(ftxui::Event::Character(c));
+        }
+        bare.component()->OnEvent(ftxui::Event::Return);
+
+        auto screen = ftxui::Screen(SCREEN_WIDTH, height());
+        ftxui::Render(screen, bare.component()->Render());
+
+        EXPECT_NE(screen.ToString().find("unknown command /reopen"),
+                  std::string::npos);
+    }
+
+    TEST_F(ViewerTest, AShrinkingSourceClampsTheCursor) {
+        auto& fake = attach(4096);
+        draw();
+        command("jump f00");
+
+        fake.bytes().resize(256);
+        fake.heat().resize(256);
+        viewer_.tick();
+
+        EXPECT_TRUE(shows("cursor 0xff "));
     }
 
     TEST_F(ViewerTest, ClearingTheLayoutBringsBackTheInspector) {
