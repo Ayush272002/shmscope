@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="180" viewBox="0 0 760 180" role="img" aria-label="shmscope">
+  <defs>
+    <linearGradient id="trace" x1="0" y1="0" x2="360" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#e63c3c"/>
+      <stop offset="1" stop-color="#ffc800"/>
+    </linearGradient>
+    <pattern id="grid" width="12" height="12" patternUnits="userSpaceOnUse">
+      <circle cx="6" cy="6" r="1" fill="#464646"/>
+    </pattern>
+    <clipPath id="screen">
+      <rect width="360" height="140"/>
+    </clipPath>
+    <mask id="wave" maskUnits="userSpaceOnUse" x="0" y="0" width="360" height="140">
+      <g clip-path="url(#screen)">
+        <path fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" d="M0,70.0 L4,63.3 L8,56.8 L12,50.5 L16,44.6 L20,39.1 L24,34.3 L28,30.2 L32,26.9 L36,24.3 L40,22.7 L44,22.0 L48,22.3 L52,23.4 L56,25.5 L60,28.4 L64,32.2 L68,36.7 L72,41.8 L76,47.5 L80,53.6 L84,60.0 L88,66.7 L92,73.3 L96,80.0 L100,86.4 L104,92.5 L108,98.2 L112,103.3 L116,107.8 L120,111.6 L124,114.5 L128,116.6 L132,117.7 L136,118.0 L140,117.3 L144,115.7 L148,113.1 L152,109.8 L156,105.7 L160,100.9 L164,95.4 L168,89.5 L172,83.2 L176,76.7 L180,70.0 L184,63.3 L188,56.8 L192,50.5 L196,44.6 L200,39.1 L204,34.3 L208,30.2 L212,26.9 L216,24.3 L220,22.7 L224,22.0 L228,22.3 L232,23.4 L236,25.5 L240,28.4 L244,32.2 L248,36.7 L252,41.8 L256,47.5 L260,53.6 L264,60.0 L268,66.7 L272,73.3 L276,80.0 L280,86.4 L284,92.5 L288,98.2 L292,103.3 L296,107.8 L300,111.6 L304,114.5 L308,116.6 L312,117.7 L316,118.0 L320,117.3 L324,115.7 L328,113.1 L332,109.8 L336,105.7 L340,100.9 L344,95.4 L348,89.5 L352,83.2 L356,76.7 L360,70.0 L364,63.3 L368,56.8 L372,50.5 L376,44.6 L380,39.1 L384,34.3 L388,30.2 L392,26.9 L396,24.3 L400,22.7 L404,22.0 L408,22.3 L412,23.4 L416,25.5 L420,28.4 L424,32.2 L428,36.7 L432,41.8 L436,47.5 L440,53.6 L444,60.0 L448,66.7 L452,73.3 L456,80.0 L460,86.4 L464,92.5 L468,98.2 L472,103.3 L476,107.8 L480,111.6 L484,114.5 L488,116.6 L492,117.7 L496,118.0 L500,117.3 L504,115.7 L508,113.1 L512,109.8 L516,105.7 L520,100.9 L524,95.4 L528,89.5 L532,83.2 L536,76.7 L540,70.0">
+          <animateTransform attributeName="transform" type="translate" from="0 0" to="-180 0" dur="2.4s" repeatCount="indefinite"/>
+        </path>
+      </g>
+    </mask>
+  </defs>
+
+  <rect x="1" y="1" width="758" height="178" rx="14" fill="#16161e" stroke="#7aa2f7" stroke-width="2"/>
+
+  <g transform="translate(20 20)">
+    <rect width="360" height="140" rx="8" fill="#16161e" stroke="#6e6e6e" stroke-width="1.5"/>
+    <rect width="360" height="140" fill="url(#grid)"/>
+    <rect width="360" height="140" fill="url(#trace)" mask="url(#wave)"/>
+  </g>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+    <text x="414" y="76" font-size="34" font-weight="700" fill="#e6e6e6">shmscope</text>
+    <text x="414" y="108" font-size="15" fill="#8a8a8a">live viewer for POSIX shared memory</text>
+    <text x="414" y="134" font-size="13" fill="#6e6e6e">read only · changes highlighted</text>
+  </g>
+</svg>
