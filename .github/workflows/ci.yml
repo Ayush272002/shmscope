@@ -28,12 +28,16 @@ jobs:
         run: ctest --preset release
 
   macos:
-    name: macos (${{ matrix.preset }})
+    name: macos ${{ matrix.name }}
     runs-on: macos-26
     strategy:
       fail-fast: false
       matrix:
-        preset: [release, asan]
+        include:
+          - name: build
+            preset: release
+          - name: asan
+            preset: asan
     steps:
       - uses: actions/checkout@v4
 
