@@ -15,20 +15,10 @@
 #include <ftxui/component/event.hpp>
 
 #include "shmscope/core/shm_source.hpp"
+#include "shmscope/layout/document.hpp"
+#include "shmscope/layout/load_layout.hpp"
 
 namespace shmscope {
-
-    namespace {
-
-        constexpr std::string_view ALTERNATE_SCROLL_ON = "\x1b[?1007h";
-        constexpr std::string_view ALTERNATE_SCROLL_OFF = "\x1b[?1007l";
-
-        void send(const std::string_view sequence) {
-            std::fwrite(sequence.data(), 1, sequence.size(), stdout);
-            std::fflush(stdout);
-        }
-
-    }  // namespace
 
     Application::Application(Options options)
         : options_(std::move(options)),
@@ -41,9 +31,24 @@ namespace shmscope {
                   }
               },
               [this] { terminal_.Exit(); }, options_.hz, &recent_),
-          viewer_(options_.hz, [this] { close(); }) {}
+          viewer_(
+              options_.hz, [this] { close(); },
+              [](const std::filesystem::path& file)
+                  -> std::expected<Layout, std::string> {
+                  auto layout = shmscope::loadLayout(file);
+                  if (!layout) return std::unexpected(describe(layout.error()));
+
+                  return std::move(*layout);
+              }) {}
 
     int Application::run() {
+        if (options_.layout) {
+            if (auto error = viewer_.loadLayout(*options_.layout)) {
+                std::println(stderr, "shmscope: {}", *error);
+                return 1;
+            }
+        }
+
         if (options_.name) {
             if (auto error = open(*options_.name)) {
                 std::println(stderr, "shmscope: {}", *error);
@@ -89,11 +94,9 @@ namespace shmscope {
             }
         });
 
-        terminal_.TrackMouse(false);
+        terminal_.TrackMouse(true);
         terminal_.ForceHandleCtrlC(false);
-        send(ALTERNATE_SCROLL_ON);
         terminal_.Loop(root);
-        send(ALTERNATE_SCROLL_OFF);
         return 0;
     }
 

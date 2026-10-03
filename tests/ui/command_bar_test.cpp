@@ -1,6 +1,7 @@
 #include "shmscope/ui/command_bar.hpp"
 
 #include <cstddef>
+#include <format>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -351,6 +352,203 @@ namespace {
         press(ftxui::Event::Tab);
 
         EXPECT_TRUE(shows("› /jumpy "));
+    }
+
+    class ArgumentCompletionTest : public CommandBarTest {
+    protected:
+        void SetUp() override {
+            CommandBarTest::SetUp();
+            bar_.add({.name = "open",
+                      .args = "<file>",
+                      .run =
+                          [this](std::string_view arguments) {
+                              calls_.push_back(
+                                  {"open", std::string(arguments)});
+                              return std::optional<std::string>{};
+                          },
+                      .suggest =
+                          [this](std::string_view partial) {
+                              std::vector<std::string> found;
+                              for (const auto& choice : choices_) {
+                                  if (choice.starts_with(partial)) {
+                                      found.push_back(choice);
+                                  }
+                              }
+                              return found;
+                          }});
+        }
+
+        void typeOpen(std::string_view text) {
+            press(ftxui::Event::Character('/'));
+            type(text);
+            press(ftxui::Event::Tab);
+        }
+
+        std::vector<std::string> choices_{"alpha/", "alpine.ksy", "beta.ksy"};
+    };
+
+    TEST_F(ArgumentCompletionTest, TabCompletesAUniqueArgument) {
+        typeOpen("open b");
+
+        EXPECT_TRUE(shows("› /open beta.ksy"));
+        press(ftxui::Event::Return);
+        ASSERT_EQ(calls_.size(), 1U);
+        EXPECT_EQ(calls_[0].args, "beta.ksy");
+    }
+
+    TEST_F(ArgumentCompletionTest, TabExtendsToTheCommonPrefixAndListsChoices) {
+        typeOpen("open al");
+
+        EXPECT_TRUE(shows("› /open alp"));
+        EXPECT_TRUE(shows("   alpha/"));
+        EXPECT_TRUE(shows("   alpine.ksy"));
+        EXPECT_FALSE(shows("beta.ksy"));
+    }
+
+    TEST_F(ArgumentCompletionTest, TabWithAnEmptyArgumentListsEverything) {
+        typeOpen("open ");
+
+        EXPECT_TRUE(shows("   alpha/"));
+        EXPECT_TRUE(shows("   beta.ksy"));
+        EXPECT_FALSE(shows("pause updates"));
+    }
+
+    TEST_F(ArgumentCompletionTest, DirectoriesCompleteWithTheirSlash) {
+        typeOpen("open alph");
+
+        EXPECT_TRUE(shows("› /open alpha/"));
+    }
+
+    TEST_F(ArgumentCompletionTest, ChoicesShowOnlyTheLastPart) {
+        choices_ = {"dir/sub/x.ksy", "dir/sub/y.ksy", "dir/sub/deeper/"};
+        typeOpen("open dir/sub/");
+
+        EXPECT_TRUE(shows("   x.ksy"));
+        EXPECT_TRUE(shows("   deeper/"));
+        EXPECT_FALSE(shows("   dir/sub/x.ksy"));
+    }
+
+    TEST_F(ArgumentCompletionTest, TypingHidesTheChoices) {
+        typeOpen("open al");
+        type("p");
+
+        EXPECT_FALSE(shows("   alpine.ksy"));
+    }
+
+    TEST_F(ArgumentCompletionTest, BackspaceHidesTheChoices) {
+        typeOpen("open al");
+        press(ftxui::Event::Backspace);
+
+        EXPECT_FALSE(shows("   alpine.ksy"));
+    }
+
+    TEST_F(ArgumentCompletionTest, NoSuggestionsChangeNothing) {
+        typeOpen("open zz");
+
+        EXPECT_TRUE(shows("› /open zz"));
+        EXPECT_EQ(bar_.height(), 3 + 1);
+    }
+
+    TEST_F(ArgumentCompletionTest, LongListsAreCapped) {
+        choices_.clear();
+        for (int i = 0; i < 12; ++i) {
+            choices_.push_back(std::format("f{:02}.ksy", i));
+        }
+        typeOpen("open f");
+
+        auto tall = ftxui::Screen(80, 20);
+        ftxui::Render(tall, bar_.render());
+        const auto text = plain(tall.ToString());
+
+        EXPECT_NE(text.find("   f07.ksy"), std::string::npos);
+        EXPECT_EQ(text.find("   f08.ksy"), std::string::npos);
+        EXPECT_NE(text.find("… 4 more"), std::string::npos);
+        EXPECT_EQ(bar_.height(),
+                  3 + static_cast<int>(CommandBar::MAX_CHOICES_SHOWN) + 1);
+    }
+
+    TEST_F(ArgumentCompletionTest, HeightCountsTheChoices) {
+        typeOpen("open al");
+
+        EXPECT_EQ(bar_.height(), 3 + 2);
+    }
+
+    TEST_F(ArgumentCompletionTest, EscapeClearsTheChoices) {
+        typeOpen("open al");
+        press(ftxui::Event::Escape);
+        press(ftxui::Event::Character('/'));
+
+        EXPECT_FALSE(shows("alpine.ksy"));
+    }
+
+    class ErrorWrapTest : public CommandBarTest {
+    protected:
+        void SetUp() override {
+            CommandBarTest::SetUp();
+            add("long", "", "fails at length",
+                "layouts/qcmdseg.ksy:25:7: instances.latest.pos: 'nope' has no "
+                "field");
+            add("token", "", "one unbreakable word",
+                "abcdefghijklmnopqrstuvwxyz0123456789");
+        }
+
+        std::vector<std::string> lines(int width, int height = 12) {
+            bar_.setWidth(width);
+            auto screen = ftxui::Screen(width, height);
+            ftxui::Render(screen, bar_.render());
+            std::vector<std::string> out;
+            for (int y = 0; y < height; ++y) {
+                std::string line;
+                for (int x = 0; x < width; ++x) {
+                    const auto& c = screen.PixelAt(x, y).character;
+                    line += c.empty() ? " " : c;
+                }
+                while (!line.empty() && line.back() == ' ') line.pop_back();
+                out.push_back(std::move(line));
+            }
+            return out;
+        }
+    };
+
+    TEST_F(ErrorWrapTest, ShortErrorsStayOnOneLine) {
+        run("fail");
+
+        EXPECT_EQ(lines(80)[3], "   it broke");
+        EXPECT_EQ(bar_.height(), 3 + 1);
+    }
+
+    TEST_F(ErrorWrapTest, LongErrorsWrapAtSpaces) {
+        run("long");
+        const auto shown = lines(40);
+
+        EXPECT_EQ(shown[3], "   layouts/qcmdseg.ksy:25:7:");
+        EXPECT_EQ(shown[4], "   instances.latest.pos: 'nope' has no");
+        EXPECT_EQ(shown[5], "   field");
+        EXPECT_EQ(bar_.height(), 3 + 3);
+    }
+
+    TEST_F(ErrorWrapTest, WideTerminalsKeepOneLine) {
+        run("long");
+
+        EXPECT_EQ(lines(120)[3],
+                  "   layouts/qcmdseg.ksy:25:7: instances.latest.pos: 'nope' "
+                  "has no field");
+        EXPECT_EQ(bar_.height(), 3 + 1);
+    }
+
+    TEST_F(ErrorWrapTest, UnbreakableWordsAreSplit) {
+        run("token");
+        const auto shown = lines(20);
+
+        EXPECT_EQ(shown[3], "   abcdefghijklmnopq");
+        EXPECT_EQ(shown[4], "   rstuvwxyz01234567");
+        EXPECT_EQ(shown[5], "   89");
+    }
+
+    TEST_F(ErrorWrapTest, NoErrorTakesNoLines) {
+        bar_.setWidth(20);
+
+        EXPECT_EQ(bar_.height(), 3);
     }
 
     TEST_F(CommandBarTest, TabWithNoMatchesChangesNothing) {

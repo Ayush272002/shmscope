@@ -12,6 +12,9 @@ int main(const int argc, char** argv) {
     shmscope::Options options;
     cli.add_option("name", options.name,
                    "shared memory object to open, e.g. /something.shm");
+    cli.add_option("-l,--layout", options.layout,
+                   "layout file (.ksy, .yaml or .json) to overlay on the bytes")
+        ->check(CLI::ExistingFile);
     cli.add_option("--hz", options.hz, "refresh rate")
         ->check(CLI::Range(1, 60))
         ->capture_default_str();

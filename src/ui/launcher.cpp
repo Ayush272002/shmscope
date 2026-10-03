@@ -86,12 +86,17 @@ namespace shmscope {
             return true;
         }
 
-        if (event == ftxui::Event::ArrowDown) {
+        auto copy = event;
+        const auto button =
+            event.is_mouse() ? copy.mouse().button : ftxui::Mouse::None;
+
+        if (event == ftxui::Event::ArrowDown ||
+            button == ftxui::Mouse::WheelDown) {
             cycleRecent(1);
             return true;
         }
 
-        if (event == ftxui::Event::ArrowUp) {
+        if (event == ftxui::Event::ArrowUp || button == ftxui::Mouse::WheelUp) {
             cycleRecent(-1);
             return true;
         }
