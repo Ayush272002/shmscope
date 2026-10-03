@@ -13,6 +13,7 @@
 #include "shmscope/core/decode.hpp"
 #include "shmscope/core/default_formatters.hpp"
 #include "shmscope/layout/document.hpp"
+#include "shmscope/layout/expression.hpp"
 
 namespace shmscope {
 
@@ -23,6 +24,7 @@ namespace shmscope {
     struct Expression {
         std::string text{};
         Location location{};
+        Program program{};
     };
 
     /// One branch of a switch: which user type to use for a given value.
