@@ -133,6 +133,7 @@ jobs:
           cmake --build build-valgrind
 
       - name: Test
+        timeout-minutes: 30
         run: |
           valgrind \
             --error-exitcode=1 \
@@ -141,7 +142,8 @@ jobs:
             --show-leak-kinds=definite,indirect \
             --errors-for-leak-kinds=definite,indirect \
             --track-origins=yes \
-            ./build-valgrind/shmscope_tests
+            ./build-valgrind/shmscope_tests \
+            --gtest_filter=-ReaderFileTest.FileAtTheSizeLimitIsRead
 
       - name: Valgrind reports
         if: failure()

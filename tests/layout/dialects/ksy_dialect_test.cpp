@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <ostream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -364,6 +365,8 @@ types:
         std::string_view kaitai;
         FieldType type;
     };
+
+    void PrintTo(const PrimitiveCase& c, std::ostream* os) { *os << c.kaitai; }
 
     class KsyPrimitiveTest : public ::testing::TestWithParam<PrimitiveCase> {};
 
