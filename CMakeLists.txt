@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 4.2)
 
-set(CMAKE_PROJECT_TOP_LEVEL_INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/cmake/conan.cmake)
+option(SHMSCOPE_USE_CONAN "Fetch dependencies with Conan" ON)
+if(SHMSCOPE_USE_CONAN)
+    set(CMAKE_PROJECT_TOP_LEVEL_INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/cmake/conan.cmake)
+endif()
 
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" SHMSCOPE_VERSION)
 
@@ -61,8 +64,14 @@ target_include_directories(shmscope_core PUBLIC
 find_package(ftxui CONFIG REQUIRED)
 find_package(yaml-cpp CONFIG REQUIRED)
 find_package(CLI11 CONFIG REQUIRED)
-find_package(highway CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
+
+if(SHMSCOPE_USE_CONAN)
+    find_package(highway CONFIG REQUIRED)
+else()
+    find_package(hwy CONFIG REQUIRED)
+    add_library(highway::highway ALIAS hwy::hwy)
+endif()
 
 target_link_libraries(shmscope_core PRIVATE
         ftxui::screen
@@ -85,6 +94,9 @@ target_link_libraries(shmscope PRIVATE
         shmscope::sanitizers
         CLI11::CLI11
 )
+
+include(GNUInstallDirs)
+install(TARGETS shmscope RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
     set(SHMSCOPE_BUILD_TESTS_DEFAULT ON)

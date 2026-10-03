@@ -97,3 +97,25 @@ jobs:
             "dist/${{ steps.package.outputs.name }}.tar.gz.sha256" \
             --title "v${{ steps.bump.outputs.version }}" \
             --generate-notes
+
+      - name: Update the Homebrew tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          URL="https://github.com/${{ github.repository }}/archive/refs/tags/v${VERSION}.tar.gz"
+          SHA=$(curl -fsSL "$URL" | shasum -a 256 | cut -d' ' -f1)
+
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/Ayush272002/homebrew-tap.git" tap
+          mkdir -p tap/Formula
+          sed -E \
+            -e "s|^  url \".*\"|  url \"${URL}\"|" \
+            -e "s|^  sha256 \".*\"|  sha256 \"${SHA}\"|" \
+            packaging/homebrew/shmscope.rb > tap/Formula/shmscope.rb
+
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/shmscope.rb
+          git commit -m "shmscope ${VERSION}"
+          git push origin HEAD:main
