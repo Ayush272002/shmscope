@@ -64,14 +64,14 @@ namespace shmscope {
 
     private:
         Kind kind_ = Kind::NUL;
-        std::string text_;
-        std::vector<Node> items_;
-        std::vector<Entry> entries_;
-        Location location_;
+        std::string text_{};
+        std::vector<Node> items_{};
+        std::vector<Entry> entries_{};
+        Location location_{};
     };
 
     struct Node::Entry {
-        std::string key;
+        std::string key{};
         Node value;
         Location location{};
     };

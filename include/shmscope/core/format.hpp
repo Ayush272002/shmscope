@@ -19,7 +19,7 @@
 namespace shmscope {
 
     struct FormatSpec {
-        std::string kind;
+        std::string kind{};
         std::map<std::string, std::string, std::less<>> options{};
         std::vector<std::pair<std::string, std::string>> entries{};
     };
