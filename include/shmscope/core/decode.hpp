@@ -152,7 +152,7 @@ namespace shmscope {
     }
 
     struct Value {
-        std::variant<std::uint64_t, std::int64_t, double, std::string> data;
+        std::variant<std::uint64_t, std::int64_t, double, std::string> data{};
         std::size_t width = 0;
     };
 

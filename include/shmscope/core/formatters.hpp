@@ -41,7 +41,7 @@ namespace shmscope {
     struct EnumFormatter {
         static constexpr std::string_view NAME = "enum";
         struct Options {
-            std::vector<std::pair<std::uint64_t, std::string>> names;
+            std::vector<std::pair<std::uint64_t, std::string>> names{};
         };
 
         [[nodiscard]] static std::expected<Options, std::string> parse(
