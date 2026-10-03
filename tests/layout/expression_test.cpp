@@ -38,7 +38,7 @@ namespace {
     };
 
     void PrintTo(const Case& value, std::ostream* out) {
-        *out << '"' << value.text << '"';
+        *out << ::testing::PrintToString(value.text);
     }
 
     class CompilesTo : public ::testing::TestWithParam<Case> {};
