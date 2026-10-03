@@ -19,17 +19,61 @@ jobs:
           cache-suffix: release
 
       - name: Configure
-        run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
-            -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
-            -DCMAKE_EXE_LINKER_FLAGS="-stdlib=libc++ -lc++abi"
+        run: cmake --preset release
 
       - name: Build
-        run: cmake --build build
+        run: cmake --build --preset release
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --preset release
+
+  macos:
+    name: macos (${{ matrix.preset }})
+    runs-on: macos-26
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [release, asan]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install CMake 4.2
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: "4.2"
+
+      - name: Install Ninja
+        run: brew install ninja
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install Conan
+        run: uv sync --no-dev
+
+      - name: Cache Conan packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.conan2/p
+          key: conan2-${{ runner.os }}-appleclang-${{ matrix.preset }}-${{ hashFiles('**/conanfile.py') }}
+          restore-keys: |
+            conan2-${{ runner.os }}-appleclang-${{ matrix.preset }}-
+
+      - name: Configure Conan
+        run: |
+          .venv/bin/conan profile detect --force
+          sed -i '' 's/compiler.cppstd=.*/compiler.cppstd=23/' ~/.conan2/profiles/default
+          .venv/bin/conan profile show
+          clang++ --version
+
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }}
+
+      - name: Test
+        run: ctest --preset ${{ matrix.preset }}
 
   coverage:
     runs-on: ubuntu-latest
@@ -40,28 +84,24 @@ jobs:
           cache-suffix: coverage
 
       - name: Configure
-        run: |
-          cmake -S . -B build-cov -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
-            -DCMAKE_CXX_FLAGS="-stdlib=libc++ -fprofile-instr-generate -fcoverage-mapping -DHWY_COMPILE_ONLY_STATIC=1" \
-            -DCMAKE_EXE_LINKER_FLAGS="-stdlib=libc++ -lc++abi -fprofile-instr-generate -fcoverage-mapping"
-          cmake --build build-cov
+        run: cmake --preset coverage
+
+      - name: Build
+        run: cmake --build --preset coverage
 
       - name: Test
-        env:
-          LLVM_PROFILE_FILE: ${{ github.workspace }}/build-cov/shmscope-%p.profraw
-        run: ctest --test-dir build-cov --output-on-failure
+        run: ctest --preset coverage
 
       - name: Coverage report
         run: |
-          llvm-profdata-21 merge -sparse build-cov/shmscope-*.profraw \
-            -o build-cov/shmscope.profdata
-          llvm-cov-21 report build-cov/shmscope_tests \
-            -instr-profile=build-cov/shmscope.profdata \
-            -ignore-filename-regex='(tests/|benchmark/|gtest|\.conan2|_deps/)'
-          BRANCH_COVER=$(llvm-cov-21 export build-cov/shmscope_tests \
-            -instr-profile=build-cov/shmscope.profdata \
-            -ignore-filename-regex='(tests/|benchmark/|gtest|\.conan2|_deps/)' \
+          llvm-profdata-21 merge -sparse cmake-build-coverage/shmscope-*.profraw \
+            -o cmake-build-coverage/shmscope.profdata
+          llvm-cov-21 report cmake-build-coverage/shmscope_tests \
+            -instr-profile=cmake-build-coverage/shmscope.profdata \
+            -ignore-filename-regex='(tests/|benchmark/|examples/|gtest|\.conan2|_deps/)'
+          BRANCH_COVER=$(llvm-cov-21 export cmake-build-coverage/shmscope_tests \
+            -instr-profile=cmake-build-coverage/shmscope.profdata \
+            -ignore-filename-regex='(tests/|benchmark/|examples/|gtest|\.conan2|_deps/)' \
             -summary-only | python3 -c "import json,sys; print(json.load(sys.stdin)['data'][0]['totals']['branches']['percent'])")
           echo "Branch coverage: ${BRANCH_COVER}%"
           python3 -c "import sys; sys.exit(0 if float('${BRANCH_COVER}') >= 80 else 1)"
@@ -74,20 +114,14 @@ jobs:
         with:
           cache-suffix: asan
 
-      - name: Build with ASan and UBSan
-        run: |
-          cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug \
-            -DSHMSCOPE_SANITIZE=address \
-            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
-            -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
-            -DCMAKE_EXE_LINKER_FLAGS="-stdlib=libc++ -lc++abi"
-          cmake --build build-asan
+      - name: Configure
+        run: cmake --preset asan
+
+      - name: Build
+        run: cmake --build --preset asan
 
       - name: Test under ASan and UBSan
-        env:
-          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:detect_stack_use_after_return=1
-          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-        run: ctest --test-dir build-asan --output-on-failure
+        run: ctest --preset asan
 
   tsan:
     runs-on: ubuntu-latest
@@ -97,20 +131,14 @@ jobs:
         with:
           cache-suffix: tsan
 
-      - name: Build with TSan and UBSan
-        run: |
-          cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=Debug \
-            -DSHMSCOPE_SANITIZE=thread \
-            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
-            -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
-            -DCMAKE_EXE_LINKER_FLAGS="-stdlib=libc++ -lc++abi"
-          cmake --build build-tsan
+      - name: Configure
+        run: cmake --preset tsan
+
+      - name: Build
+        run: cmake --build --preset tsan
 
       - name: Test under TSan and UBSan
-        env:
-          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
-          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-        run: ctest --test-dir build-tsan --output-on-failure
+        run: ctest --preset tsan
 
   valgrind:
     runs-on: ubuntu-latest
@@ -123,14 +151,11 @@ jobs:
       - name: Install Valgrind
         run: sudo apt-get update && sudo apt-get install -y valgrind
 
+      - name: Configure
+        run: cmake --preset debug
+
       - name: Build
-        run: |
-          cmake -S . -B build-valgrind -DCMAKE_BUILD_TYPE=Debug \
-            -DSHMSCOPE_SANITIZE=off \
-            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
-            -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
-            -DCMAKE_EXE_LINKER_FLAGS="-stdlib=libc++ -lc++abi"
-          cmake --build build-valgrind
+        run: cmake --build --preset debug
 
       - name: Test
         timeout-minutes: 30
@@ -142,7 +167,7 @@ jobs:
             --show-leak-kinds=definite,indirect \
             --errors-for-leak-kinds=definite,indirect \
             --track-origins=yes \
-            ./build-valgrind/shmscope_tests \
+            ./cmake-build-debug/shmscope_tests \
             --gtest_filter=-ReaderFileTest.FileAtTheSizeLimitIsRead
 
       - name: Valgrind reports

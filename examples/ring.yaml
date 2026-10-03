@@ -1,0 +1,131 @@
+meta:
+  id: shm_ring
+  title: shmscope example ring buffer
+  endian: le
+  encoding: ASCII
+
+-shmscope-formats:
+  price:
+    kind: scaled
+    digits: 4
+  wall_clock:
+    kind: timestamp
+    unit: ns
+  record_kind:
+    kind: enum
+    values:
+      1: trade
+      2: quote
+  side:
+    kind: enum
+    values:
+      1: buy
+      -1: sell
+
+seq:
+  - id: header
+    type: header
+  - id: hot
+    type: hot
+
+instances:
+  latest:
+    pos: header.records_offset + (hot.sequence - 1) % header.capacity * header.record_size
+    size: header.record_size
+    type: record
+  records:
+    pos: header.records_offset
+    size: header.record_size
+    type: record
+    repeat: expr
+    repeat-expr: header.capacity
+
+types:
+  header:
+    seq:
+      - id: magic
+        contents:
+          - SHMRING
+          - 0
+      - id: version
+        type: u4
+      - id: record_size
+        type: u4
+      - id: capacity
+        type: u4
+      - id: reserved0
+        size: 4
+      - id: records_offset
+        type: u8
+        -shmscope-format: hex
+      - id: name
+        type: str
+        size: 16
+      - id: started_at
+        type: u8
+        -shmscope-format: wall_clock
+      - id: reserved
+        size: 8
+
+  hot:
+    seq:
+      - id: sequence
+        type: u8
+      - id: heartbeat
+        type: u8
+        -shmscope-format: wall_clock
+      - id: writer_pid
+        type: s4
+      - id: reserved
+        size: 44
+
+  record:
+    seq:
+      - id: sequence
+        type: u8
+      - id: timestamp
+        type: u8
+        -shmscope-format: wall_clock
+      - id: kind
+        type: u2
+        -shmscope-format: record_kind
+      - id: flags
+        type: u2
+        -shmscope-format: hex
+      - id: reserved
+        size: 4
+      - id: body
+        size: 40
+        type:
+          switch-on: kind
+          cases:
+            1: trade
+            2: quote
+
+  trade:
+    seq:
+      - id: price
+        type: s8
+        -shmscope-format: price
+      - id: quantity
+        type: s8
+      - id: side
+        type: s1
+        -shmscope-format: side
+      - id: reserved
+        size: 23
+
+  quote:
+    seq:
+      - id: bid_price
+        type: s8
+        -shmscope-format: price
+      - id: bid_quantity
+        type: s8
+      - id: ask_price
+        type: s8
+        -shmscope-format: price
+      - id: ask_quantity
+        type: s8
+      - id: reserved
+        size: 8

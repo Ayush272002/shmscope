@@ -6,6 +6,18 @@ file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" SHMSCOPE_VERSION)
 
 project(shmscope VERSION ${SHMSCOPE_VERSION} LANGUAGES C CXX)
 
+foreach(_shm_language C CXX)
+    if(NOT CMAKE_${_shm_language}_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR
+            "shmscope builds with Clang only, but the ${_shm_language} "
+            "compiler is ${CMAKE_${_shm_language}_COMPILER_ID} "
+            "${CMAKE_${_shm_language}_COMPILER_VERSION} "
+            "(${CMAKE_${_shm_language}_COMPILER}). Use a preset, e.g. "
+            "'cmake --preset debug', or pass -DCMAKE_C_COMPILER=clang "
+            "-DCMAKE_CXX_COMPILER=clang++.")
+    endif()
+endforeach()
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -82,6 +94,12 @@ endif()
 
 option(SHMSCOPE_BUILD_TESTS "Build shmscope tests" ${SHMSCOPE_BUILD_TESTS_DEFAULT})
 
+option(SHMSCOPE_BUILD_EXAMPLES "Build the example writers" ${SHMSCOPE_BUILD_TESTS_DEFAULT})
+if(SHMSCOPE_BUILD_EXAMPLES)
+    add_executable(ring_writer examples/ring_writer.cpp)
+    target_link_libraries(ring_writer PRIVATE shmscope::warnings shmscope::sanitizers)
+endif()
+
 option(SHMSCOPE_BUILD_BENCHMARKS "Build shmscope benchmarks" ${SHMSCOPE_BUILD_TESTS_DEFAULT})
 if(SHMSCOPE_BUILD_BENCHMARKS)
     add_subdirectory(benchmark)
@@ -97,7 +115,8 @@ if(SHMSCOPE_BUILD_TESTS)
         target_link_libraries(shmscope_tests PRIVATE shmscope_core ftxui::component highway::highway shmscope::warnings shmscope::sanitizers GTest::gtest_main)
 
         target_include_directories(shmscope_tests PRIVATE
-                "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests"
+                "${CMAKE_CURRENT_SOURCE_DIR}/examples")
 
         include(GoogleTest)
         gtest_discover_tests(shmscope_tests)

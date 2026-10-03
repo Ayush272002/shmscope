@@ -12,7 +12,11 @@
             "generator": "Ninja",
             "binaryDir": "${sourceDir}/cmake-build-${presetName}",
             "cacheVariables": {
-                "CONAN_COMMAND": "${sourceDir}/.venv/bin/conan"
+                "CONAN_COMMAND": "${sourceDir}/.venv/bin/conan",
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++",
+                "CMAKE_CXX_FLAGS": "-stdlib=libc++",
+                "CMAKE_EXE_LINKER_FLAGS": "-stdlib=libc++ -lc++abi"
             }
         },
         {
@@ -42,11 +46,29 @@
             }
         },
         {
+            "name": "coverage",
+            "displayName": "Coverage",
+            "inherits": "base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_CXX_FLAGS": "-stdlib=libc++ -fprofile-instr-generate -fcoverage-mapping -DHWY_COMPILE_ONLY_STATIC=1",
+                "CMAKE_EXE_LINKER_FLAGS": "-stdlib=libc++ -lc++abi -fprofile-instr-generate -fcoverage-mapping"
+            }
+        },
+        {
             "name": "release",
             "displayName": "Release",
             "inherits": "base",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "relwithdebinfo",
+            "displayName": "Release with debug info",
+            "inherits": "base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo"
             }
         }
     ],
@@ -64,31 +86,66 @@
             "configurePreset": "tsan"
         },
         {
+            "name": "coverage",
+            "configurePreset": "coverage"
+        },
+        {
             "name": "release",
             "configurePreset": "release"
+        },
+        {
+            "name": "relwithdebinfo",
+            "configurePreset": "relwithdebinfo"
         }
     ],
     "testPresets": [
         {
-            "name": "debug",
-            "configurePreset": "debug",
+            "name": "base",
+            "hidden": true,
             "output": {
                 "outputOnFailure": true
             }
         },
         {
+            "name": "debug",
+            "inherits": "base",
+            "configurePreset": "debug"
+        },
+        {
             "name": "asan",
+            "inherits": "base",
             "configurePreset": "asan",
-            "output": {
-                "outputOnFailure": true
+            "environment": {
+                "ASAN_OPTIONS": "strict_string_checks=1:detect_stack_use_after_return=1",
+                "UBSAN_OPTIONS": "print_stacktrace=1:halt_on_error=1"
             }
         },
         {
             "name": "tsan",
+            "inherits": "base",
             "configurePreset": "tsan",
-            "output": {
-                "outputOnFailure": true
+            "environment": {
+                "TSAN_OPTIONS": "halt_on_error=1:second_deadlock_stack=1",
+                "UBSAN_OPTIONS": "print_stacktrace=1:halt_on_error=1"
             }
+        },
+        {
+            "name": "coverage",
+            "inherits": "base",
+            "configurePreset": "coverage",
+            "environment": {
+                "LLVM_PROFILE_FILE": "${sourceDir}/cmake-build-coverage/shmscope-%p.profraw"
+            }
+        },
+        {
+            "name": "release",
+            "inherits": "base",
+            "configurePreset": "release"
+        },
+        {
+            "name": "relwithdebinfo",
+            "inherits": "base",
+            "configurePreset": "relwithdebinfo"
         }
     ]
 }
