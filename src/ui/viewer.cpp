@@ -4,6 +4,7 @@
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <format>
 #include <memory>
 #include <optional>
@@ -20,12 +21,15 @@
 
 #include "shmscope/core/decode.hpp"
 #include "shmscope/core/source.hpp"
+#include "shmscope/ui/field_panel.hpp"
+#include "shmscope/ui/paths.hpp"
 
 namespace shmscope {
 
     namespace {
 
         constexpr int CHROME_ROWS = 3;
+        const auto FIELD_BACKGROUND = ftxui::Color::RGB(45, 55, 85);
 
         ftxui::Color heatColor(std::uint8_t heat, std::byte value) {
             const auto cold = value == std::byte{0}
@@ -54,8 +58,8 @@ namespace shmscope {
 
     }  // namespace
 
-    Viewer::Viewer(int hz, CloseFn onClose)
-        : hz_(hz), onClose_(std::move(onClose)) {
+    Viewer::Viewer(int hz, CloseFn onClose, LayoutLoader loader)
+        : hz_(hz), onClose_(std::move(onClose)), loader_(std::move(loader)) {
         addCommands();
 
         root_ = ftxui::Renderer([this](bool /*focused*/) { return render(); }) |
@@ -73,18 +77,87 @@ namespace shmscope {
         frozen_ = false;
         live_ = false;
         liveTop_ = 0;
+        tracking_.reset();
+        panelTop_.reset();
         frame_ = source_->poll();
+        updatePlacement();
     }
 
     void Viewer::detach() noexcept {
         frame_ = {};
+        placement_ = {};
+        tracking_.reset();
+        panelTop_.reset();
         source_.reset();
+    }
+
+    void Viewer::setLayout(std::optional<Layout> layout) {
+        layout_ = std::move(layout);
+        tracking_.reset();
+        panelTop_.reset();
+        updatePlacement();
+    }
+
+    std::optional<std::string> Viewer::loadLayout(
+        const std::filesystem::path& file) {
+        if (!loader_) return std::string("loading layouts is not available");
+
+        auto layout = loader_(file);
+        if (!layout) return std::move(layout.error());
+
+        std::error_code error;
+        auto absolute = std::filesystem::absolute(file, error);
+        if (error) absolute = file;
+
+        setLayout(std::move(*layout));
+        layoutFile_ = std::move(absolute);
+        return std::nullopt;
+    }
+
+    std::optional<std::string> Viewer::layoutCommand(std::string_view args) {
+        while (args.ends_with(' ')) args.remove_suffix(1);
+
+        if (args == "off") {
+            if (!layout_) return std::string("no layout is loaded");
+
+            setLayout(std::nullopt);
+            layoutFile_.reset();
+            return std::nullopt;
+        }
+        if (args == "reload") {
+            if (!layoutFile_) return std::string("no layout file to reload");
+
+            const auto file = *layoutFile_;
+            return loadLayout(file);
+        }
+        return loadLayout(expandHome(args));
+    }
+
+    void Viewer::track() noexcept {
+        if (!tracking_) return;
+
+        const auto* field = placement_.find(*tracking_);
+        if (field == nullptr || field->offset >= frame_.bytes.size()) return;
+
+        const std::size_t row = field->offset / BYTES_PER_ROW;
+        if (row < top_ || row >= top_ + visibleRows_) goTo(row);
+        setCursor(field->offset);
+    }
+
+    void Viewer::updatePlacement() {
+        if (!layout_ || frame_.bytes.empty()) {
+            placement_ = {};
+            return;
+        }
+        placement_ = place(*layout_, frame_.bytes);
     }
 
     void Viewer::tick() noexcept {
         if (source_ && !frozen_) {
             frame_ = source_->poll();
             if (following_) follow();
+            updatePlacement();
+            track();
         }
     }
 
@@ -136,6 +209,8 @@ namespace shmscope {
     }
 
     void Viewer::toTop() noexcept {
+        tracking_.reset();
+        panelTop_.reset();
         if (live_) {
             liveTop_ = 0;
         } else {
@@ -144,6 +219,8 @@ namespace shmscope {
     }
 
     void Viewer::toBottom() {
+        tracking_.reset();
+        panelTop_.reset();
         if (live_) {
             buildLive();
             liveTop_ = liveMaxTop();
@@ -169,12 +246,16 @@ namespace shmscope {
     }
 
     void Viewer::moveCursor(std::ptrdiff_t bytes) noexcept {
+        tracking_.reset();
+        panelTop_.reset();
         const auto target = static_cast<std::ptrdiff_t>(cursor_) + bytes;
         setCursor(
             static_cast<std::size_t>(std::max<std::ptrdiff_t>(target, 0)));
     }
 
     void Viewer::scrollWithCursor(std::ptrdiff_t rows) noexcept {
+        tracking_.reset();
+        panelTop_.reset();
         scrollBy(rows);
         if (frame_.bytes.empty()) {
             return;
@@ -208,7 +289,109 @@ namespace shmscope {
         }
 
         return ftxui::vbox(std::move(lines)) |
-               ftxui::size(ftxui::WIDTH, ftxui::EQUAL, INSPECTOR_WIDTH);
+               ftxui::size(ftxui::WIDTH, ftxui::GREATER_THAN, INSPECTOR_WIDTH);
+    }
+
+    ftxui::Element Viewer::renderSide() {
+        if (!layout_ || !showFields_) return renderInspector();
+
+        const auto count = placement_.fields.size();
+        const auto capacity = panelCapacity(placement_, visibleRows_);
+        shownPanelTop_ = panelTop_ ? clampTop(*panelTop_, capacity, count)
+                         : selected_
+                             ? centredTop(*selected_, capacity, count)
+                             : clampTop(shownPanelTop_, capacity, count);
+
+        return renderFieldPanel(*layout_, placement_, frame_.bytes, selected_,
+                                visibleRows_, shownPanelTop_) |
+               ftxui::size(ftxui::WIDTH, ftxui::GREATER_THAN,
+                           FIELD_PANEL_WIDTH) |
+               ftxui::xflex | ftxui::reflect(sideBox_);
+    }
+
+    bool Viewer::onMouse(ftxui::Event event) {
+        const auto& mouse = event.mouse();
+        const bool overPanel = layout_ && showFields_ && !live_ &&
+                               sideBox_.Contain(mouse.x, mouse.y);
+
+        if (mouse.button == ftxui::Mouse::WheelUp ||
+            mouse.button == ftxui::Mouse::WheelDown) {
+            const bool up = mouse.button == ftxui::Mouse::WheelUp;
+            if (overPanel) {
+                scrollPanel(up ? -1 : 1);
+                return true;
+            }
+            return onEvent(up ? ftxui::Event::ArrowUp
+                              : ftxui::Event::ArrowDown);
+        }
+
+        if (mouse.button != ftxui::Mouse::Left ||
+            mouse.motion != ftxui::Mouse::Pressed) {
+            return false;
+        }
+        if (overPanel) return clickPanel(mouse.y);
+        if (!live_ && hexBox_.Contain(mouse.x, mouse.y)) {
+            return clickHex(mouse.x, mouse.y);
+        }
+        return false;
+    }
+
+    void Viewer::scrollPanel(const std::ptrdiff_t rows) noexcept {
+        const auto count = placement_.fields.size();
+        const auto capacity = panelCapacity(placement_, visibleRows_);
+        const auto last = static_cast<std::ptrdiff_t>(
+            count > capacity ? count - capacity : 0);
+        const auto target = std::clamp<std::ptrdiff_t>(
+            static_cast<std::ptrdiff_t>(shownPanelTop_) + rows, 0, last);
+
+        shownPanelTop_ = static_cast<std::size_t>(target);
+        panelTop_ = shownPanelTop_;
+    }
+
+    bool Viewer::clickPanel(const int y) {
+        const int line =
+            y - sideBox_.y_min - static_cast<int>(PANEL_HEADER_LINES);
+        if (line < 0) return false;
+
+        const auto capacity = panelCapacity(placement_, visibleRows_);
+        const auto index = shownPanelTop_ + static_cast<std::size_t>(line);
+        if (static_cast<std::size_t>(line) >= capacity ||
+            index >= placement_.fields.size()) {
+            return false;
+        }
+
+        const auto offset = placement_.fields[index].offset;
+        if (offset >= frame_.bytes.size()) return true;
+
+        tracking_.reset();
+        panelTop_ = shownPanelTop_;
+        const std::size_t row = offset / BYTES_PER_ROW;
+        if (row < top_ || row >= top_ + visibleRows_) goTo(row);
+        setCursor(offset);
+        return true;
+    }
+
+    bool Viewer::clickHex(const int x, const int y) {
+        constexpr int LABEL_WIDTH = 12;
+        constexpr int CELL_WIDTH = 3;
+        constexpr int HALF = static_cast<int>(BYTES_PER_ROW / 2) * CELL_WIDTH;
+
+        const int line = y - hexBox_.y_min - 1;
+        int column = x - hexBox_.x_min - LABEL_WIDTH;
+        if (line < 0 || column < 0 || column == HALF) return false;
+        if (column > HALF) --column;
+
+        const auto col = static_cast<std::size_t>(column / CELL_WIDTH);
+        if (col >= BYTES_PER_ROW) return false;
+
+        const auto offset =
+            (top_ + static_cast<std::size_t>(line)) * BYTES_PER_ROW + col;
+        if (offset >= frame_.bytes.size()) return false;
+
+        tracking_.reset();
+        panelTop_.reset();
+        setCursor(offset);
+        return true;
     }
 
     bool Viewer::rowChanged(std::size_t row) const noexcept {
@@ -354,12 +537,17 @@ namespace shmscope {
             return true;
         }
 
+        if (event.is_mouse()) return onMouse(event);
+
         if (event == ftxui::Event::Escape ||
             event == ftxui::Event::Character('q')) {
             onClose_();
         } else if (event == ftxui::Event::Character(' ')) {
             frozen_ = !frozen_;
+        } else if (layout_ && event == ftxui::Event::Character('i')) {
+            showFields_ = !showFields_;
         } else if (event == ftxui::Event::Character('f')) {
+            tracking_.reset();
             following_ = !following_;
             live_ = live_ && !following_;  // follow belongs to the hex view
         } else if (live_ && event == ftxui::Event::ArrowDown) {
@@ -411,20 +599,31 @@ namespace shmscope {
             auto hex = ftxui::text(std::format(
                            "{:02x}", std::to_integer<unsigned>(value))) |
                        ftxui::color(heatColor(frame_.heat[at], value));
+            auto gap = ftxui::text(" ");
+            if (inSelectedField(at)) {
+                hex = hex | ftxui::bgcolor(FIELD_BACKGROUND);
+                if (col + 1 != BYTES_PER_ROW / 2 && col + 1 != BYTES_PER_ROW &&
+                    inSelectedField(at + 1)) {
+                    gap = gap | ftxui::bgcolor(FIELD_BACKGROUND);
+                }
+            }
             if (!live_ && at == cursor_) {
                 hex = hex | ftxui::inverted;
             }
-            cells.emplace_back(ftxui::hbox({hex, ftxui::text(" ")}));
+            cells.emplace_back(ftxui::hbox({hex, gap}));
         }
 
         return ftxui::hbox(std::move(cells));
     }
 
     ftxui::Element Viewer::render() {
+        commandBar_.setWidth(ftxui::Terminal::Size().dimx);
         visibleRows_ = static_cast<std::size_t>(std::max(
             1,
             ftxui::Terminal::Size().dimy - CHROME_ROWS - commandBar_.height()));
         top_ = std::min(top_, maxTop());
+        selected_ =
+            layout_ && !live_ ? fieldAt(placement_, cursor_) : std::nullopt;
 
         const auto name = source_ ? source_->name() : std::string_view("-");
         auto spacer =
@@ -434,10 +633,27 @@ namespace shmscope {
                           ftxui::color(ftxui::Color::Cyan)
                     : ftxui::text(" live ") | ftxui::color(ftxui::Color::Green);
         const auto accent = ftxui::Color::RGB(122, 162, 247);
+        auto layoutState = ftxui::emptyElement();
+        if (layout_) {
+            const auto fields = placement_.fields.size();
+            const auto problems = placement_.problems.size();
+            layoutState = ftxui::hbox({
+                ftxui::text(std::format(" {} · {} {} ", layout_->id, fields,
+                                        fields == 1 ? "field" : "fields")) |
+                    ftxui::color(accent),
+                problems == 0 ? ftxui::emptyElement()
+                              : ftxui::text(std::format(
+                                    "· {} {} ", problems,
+                                    problems == 1 ? "problem" : "problems")) |
+                                    ftxui::color(ftxui::Color::Yellow),
+            });
+        }
         auto follow =
-            following_ ? ftxui::text(" following ") | ftxui::color(accent)
-            : live_    ? ftxui::text(" changes only ") | ftxui::color(accent)
-                       : ftxui::emptyElement();
+            tracking_ ? ftxui::text(std::format(" tracking {} ", *tracking_)) |
+                            ftxui::color(accent)
+            : following_ ? ftxui::text(" following ") | ftxui::color(accent)
+            : live_      ? ftxui::text(" changes only ") | ftxui::color(accent)
+                         : ftxui::emptyElement();
         auto title = ftxui::vbox({
             ftxui::hbox({
                 spacer,
@@ -446,6 +662,7 @@ namespace shmscope {
                 ftxui::text(std::format(" {} bytes · {} Hz ",
                                         frame_.bytes.size(), hz_)) |
                     ftxui::dim,
+                layoutState,
                 follow,
                 state,
                 spacer,
@@ -484,17 +701,21 @@ namespace shmscope {
                          "08 09 0a 0b 0c 0d 0e 0f") |
                      ftxui::dim;
 
-        auto hex = ftxui::vbox({
-            ruler,
-            ftxui::vbox(std::move(rows)) | ftxui::yframe | ftxui::flex,
-        });
+        auto hex =
+            ftxui::vbox({
+                ruler,
+                ftxui::vbox(std::move(rows)) | ftxui::yframe | ftxui::flex,
+            }) |
+            ftxui::reflect(hexBox_);
 
-        auto body = live_ ? hex
-                          : ftxui::hbox({
-                                hex | ftxui::flex,
-                                ftxui::separatorLight(),
-                                renderInspector(),
-                            });
+        auto body =
+            live_
+                ? hex
+                : ftxui::hbox({
+                      hex | ftxui::size(ftxui::WIDTH, ftxui::EQUAL, HEX_WIDTH),
+                      ftxui::separatorLight(),
+                      renderSide() | ftxui::xflex,
+                  });
 
         auto pane = body | ftxui::borderRounded;
 
@@ -516,6 +737,7 @@ namespace shmscope {
                              [this](std::string_view) {
                                  live_ = true;
                                  following_ = false;
+                                 tracking_.reset();
                                  liveTop_ = 0;
                                  return std::optional<std::string>{};
                              },
@@ -534,6 +756,7 @@ namespace shmscope {
                              [this](std::string_view) {
                                  following_ = true;
                                  live_ = false;
+                                 tracking_.reset();
                                  return std::optional<std::string>{};
                              },
                          .available = [this] { return !following_; }});
@@ -561,6 +784,55 @@ namespace shmscope {
                                  return std::optional<std::string>{};
                              },
                          .available = [this] { return frozen_; }});
+        commandBar_.add(
+            {.name = "layout",
+             .args = "<file|off|reload>",
+             .help = "load, remove or reload a layout",
+             .run =
+                 [this](std::string_view args) { return layoutCommand(args); },
+             .suggest =
+                 [](std::string_view partial) {
+                     auto choices = completePath(partial, LAYOUT_EXTENSIONS);
+                     for (const std::string_view word : {"off", "reload"}) {
+                         if (!partial.empty() && word.starts_with(partial)) {
+                             choices.emplace_back(word);
+                         }
+                     }
+                     return choices;
+                 }});
+        commandBar_.add(
+            {.name = "fields",
+             .help = "show the layout's fields beside the bytes",
+             .run =
+                 [this](std::string_view) {
+                     showFields_ = true;
+                     return std::optional<std::string>{};
+                 },
+             .available = [this] { return layout_ && !showFields_; }});
+        commandBar_.add(
+            {.name = "inspector",
+             .help = "show every type decoded at the cursor",
+             .run =
+                 [this](std::string_view) {
+                     showFields_ = false;
+                     return std::optional<std::string>{};
+                 },
+             .available = [this] { return layout_ && showFields_; }});
+        commandBar_.add(
+            {.name = "field",
+             .args = "<path>",
+             .help = "track a field as it moves, e.g. latest.sequence",
+             .run = [this](std::string_view args) { return jumpToField(args); },
+             .available = [this] { return layout_.has_value(); }});
+        commandBar_.add(
+            {.name = "untrack",
+             .help = "stop tracking the field",
+             .run =
+                 [this](std::string_view) {
+                     tracking_.reset();
+                     return std::optional<std::string>{};
+                 },
+             .available = [this] { return tracking_.has_value(); }});
         commandBar_.add({.name = "top",
                          .help = "go to the first row",
                          .run = [this](std::string_view) {
@@ -591,9 +863,43 @@ namespace shmscope {
                                frame_.bytes.size());
         }
         live_ = false;
+        tracking_.reset();
+        panelTop_.reset();
         goTo(*offset / BYTES_PER_ROW);
         setCursor(*offset);
         return std::nullopt;
+    }
+
+    std::optional<std::string> Viewer::jumpToField(std::string_view path) {
+        if (!layout_) {
+            return std::string("/field needs a layout; start with --layout");
+        }
+        while (path.ends_with(' ')) path.remove_suffix(1);
+
+        if (path.empty()) {
+            return std::string("/field needs a field path, e.g. header.count");
+        }
+        const auto* field = placement_.find(path);
+        if (field == nullptr) {
+            return std::format("no field '{}' is placed", path);
+        }
+        if (field->offset >= frame_.bytes.size()) {
+            return std::format("'{}' starts past the end (0x{:x} bytes)", path,
+                               frame_.bytes.size());
+        }
+        live_ = false;
+        goTo(field->offset / BYTES_PER_ROW);
+        setCursor(field->offset);
+        tracking_ = std::string(path);
+        panelTop_.reset();
+        return std::nullopt;
+    }
+
+    bool Viewer::inSelectedField(const std::size_t offset) const noexcept {
+        if (!selected_ || *selected_ >= placement_.fields.size()) return false;
+
+        const auto& field = placement_.fields[*selected_];
+        return offset >= field.offset && offset - field.offset < field.size;
     }
 
 }  // namespace shmscope

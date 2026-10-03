@@ -16,6 +16,10 @@ namespace shmscope {
     public:
         using RunFn =
             std::function<std::optional<std::string>(std::string_view args)>;
+        using SuggestFn =
+            std::function<std::vector<std::string>(std::string_view partial)>;
+
+        static constexpr std::size_t MAX_CHOICES_SHOWN = 8;
 
         struct Command {
             std::string name;    // without the slash
@@ -23,6 +27,7 @@ namespace shmscope {
             std::string help{};
             RunFn run;
             std::function<bool()> available{};
+            SuggestFn suggest{};
         };
 
         void add(Command command);
@@ -32,7 +37,9 @@ namespace shmscope {
 
         [[nodiscard]] bool isOpen() const noexcept { return open_; }
 
-        [[nodiscard]] int height() const noexcept;
+        void setWidth(int width) noexcept { width_ = width; }
+
+        [[nodiscard]] int height() const;
 
         [[nodiscard]] ftxui::Element render() const;
 
@@ -43,12 +50,17 @@ namespace shmscope {
 
         void close() noexcept;
         void complete();
+        void completeArgs();
         void execute();
+        [[nodiscard]] std::size_t choiceLines() const noexcept;
+        [[nodiscard]] std::vector<std::string> errorLines() const;
 
         std::vector<Command> commands_;
+        std::vector<std::string> choices_;
         std::string input_;  // text after the slash
         std::string error_;
         std::size_t selected_ = 0;  // index into matches()
+        int width_ = 80;
         bool open_ = false;
     };
 }  // namespace shmscope

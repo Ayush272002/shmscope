@@ -1,5 +1,6 @@
 #pragma once
 
+#include <filesystem>
 #include <optional>
 #include <string>
 
@@ -13,6 +14,7 @@ namespace shmscope {
 
     struct Options {
         std::optional<std::string> name{};
+        std::optional<std::filesystem::path> layout{};
         int hz = 15;
     };
 

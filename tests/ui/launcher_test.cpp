@@ -6,6 +6,7 @@
 
 #include <ftxui/component/component_base.hpp>
 #include <ftxui/component/event.hpp>
+#include <ftxui/component/mouse.hpp>
 #include <ftxui/dom/node.hpp>
 #include <ftxui/screen/screen.hpp>
 #include <gtest/gtest.h>
@@ -211,6 +212,20 @@ namespace {
 
     TEST_F(LauncherRecentTest, ArrowDownWalksTheList) {
         EXPECT_EQ(submitAfter(3), "/c");
+    }
+
+    TEST_F(LauncherRecentTest, TheWheelWalksTheListLikeTheArrows) {
+        ftxui::Mouse down;
+        down.button = ftxui::Mouse::WheelDown;
+        ftxui::Mouse up;
+        up.button = ftxui::Mouse::WheelUp;
+
+        EXPECT_TRUE(press(ftxui::Event::Mouse("", down)));
+        EXPECT_TRUE(press(ftxui::Event::Mouse("", down)));
+        EXPECT_TRUE(press(ftxui::Event::Mouse("", down)));
+        EXPECT_TRUE(press(ftxui::Event::Mouse("", up)));
+
+        EXPECT_EQ(submitAfter(0), "/b");
     }
 
     TEST_F(LauncherRecentTest, ArrowDownStopsAtTheLastShown) {

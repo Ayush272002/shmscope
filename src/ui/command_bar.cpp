@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <format>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -11,7 +12,61 @@
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/screen/color.hpp>
 
+#include "shmscope/ui/paths.hpp"
+
 namespace shmscope {
+
+    namespace {
+
+        constexpr std::size_t ERROR_INDENT = 3;
+
+        std::vector<std::string> wrap(const std::string_view text,
+                                      const std::size_t width) {
+            std::vector<std::string> lines;
+            std::string line;
+            std::size_t start = 0;
+
+            while (start < text.size()) {
+                const auto space = text.find(' ', start);
+                auto word = text.substr(start, space == std::string_view::npos
+                                                   ? std::string_view::npos
+                                                   : space - start);
+                start =
+                    space == std::string_view::npos ? text.size() : space + 1;
+
+                while (!word.empty()) {
+                    const auto room =
+                        line.empty() ? width : width - line.size() - 1;
+                    if (word.size() <= room) {
+                        if (!line.empty()) line += ' ';
+                        line += word;
+                        word = {};
+                    } else if (!line.empty()) {
+                        lines.push_back(std::move(line));
+                        line.clear();
+                    } else {
+                        lines.emplace_back(word.substr(0, width));
+                        word.remove_prefix(width);
+                    }
+                }
+            }
+            if (!line.empty() || lines.empty())
+                lines.push_back(std::move(line));
+
+            return lines;
+        }
+
+    }  // namespace
+
+    std::vector<std::string> CommandBar::errorLines() const {
+        if (error_.empty()) return {};
+
+        const auto usable =
+            width_ > static_cast<int>(ERROR_INDENT) + 1
+                ? static_cast<std::size_t>(width_) - ERROR_INDENT
+                : std::size_t{1};
+        return wrap(error_, usable);
+    }
 
     void CommandBar::add(Command command) {
         commands_.push_back(std::move(command));
@@ -52,11 +107,41 @@ namespace shmscope {
     void CommandBar::close() noexcept {
         open_ = false;
         input_.clear();
+        choices_.clear();
         selected_ = 0;
     }
 
+    void CommandBar::completeArgs() {
+        choices_.clear();
+
+        const auto found = matches();
+        if (found.size() != 1) return;
+
+        const Command& command = commands_[found.front()];
+        if (!command.suggest) return;
+
+        const auto partial = args();
+        auto choices = command.suggest(partial);
+        if (choices.empty()) return;
+
+        const auto prefix = commonPrefix(choices);
+        if (prefix.size() > partial.size()) {
+            input_ = command.name + ' ' + prefix;
+        }
+        if (choices.size() > 1) choices_ = std::move(choices);
+    }
+
+    std::size_t CommandBar::choiceLines() const noexcept {
+        if (choices_.size() <= MAX_CHOICES_SHOWN) return choices_.size();
+
+        return MAX_CHOICES_SHOWN + 1;
+    }
+
     void CommandBar::complete() {
-        if (input_.find(' ') != std::string::npos) return;
+        if (input_.find(' ') != std::string::npos) {
+            completeArgs();
+            return;
+        }
 
         const auto found = matches();
         if (found.empty()) return;
@@ -115,6 +200,7 @@ namespace shmscope {
             const auto count = matches().size();
             selected_ = count > 0 ? std::min(selected_ + 1, count - 1) : 0;
         } else if (event == ftxui::Event::Backspace) {
+            choices_.clear();
             if (input_.empty()) {
                 close();
             } else {
@@ -128,6 +214,7 @@ namespace shmscope {
             }
         } else if (event.is_character()) {
             input_ += event.character();
+            choices_.clear();
             selected_ = 0;
         } else if (event.is_mouse()) {
             return false;
@@ -135,9 +222,12 @@ namespace shmscope {
         return true;
     }
 
-    int CommandBar::height() const noexcept {
-        const int errorLine = error_.empty() ? 0 : 1;
-        const int suggestions = open_ ? static_cast<int>(matches().size()) : 0;
+    int CommandBar::height() const {
+        const int errorLine = static_cast<int>(errorLines().size());
+        const int suggestions = !open_ ? 0
+                                : choices_.empty()
+                                    ? static_cast<int>(matches().size())
+                                    : static_cast<int>(choiceLines());
         return 3 + errorLine + suggestions;
     }
 
@@ -160,12 +250,33 @@ namespace shmscope {
         lines.push_back(prompt | ftxui::xflex |
                         ftxui::borderStyled(ftxui::ROUNDED, muted));
 
-        if (!error_.empty()) {
-            lines.push_back(ftxui::text("   " + error_) |
+        for (const auto& line : errorLines()) {
+            lines.push_back(ftxui::text(std::string(ERROR_INDENT, ' ') + line) |
                             ftxui::color(ftxui::Color::Red));
         }
 
-        if (open_) {
+        if (open_ && !choices_.empty()) {
+            const auto shown = std::min(choices_.size(), MAX_CHOICES_SHOWN);
+            for (std::size_t n = 0; n < shown; ++n) {
+                const std::string_view choice = choices_[n];
+                const auto end =
+                    choice.ends_with('/') ? choice.size() - 1 : choice.size();
+                const auto slash = choice.rfind('/', end == 0 ? 0 : end - 1);
+                const auto name = slash == std::string_view::npos ||
+                                          slash + 1 >= choice.size()
+                                      ? choice
+                                      : choice.substr(slash + 1);
+                lines.push_back(ftxui::text("   " + std::string(name)) |
+                                ftxui::color(name.ends_with('/')
+                                                 ? accent
+                                                 : ftxui::Color::Default));
+            }
+            if (choices_.size() > shown) {
+                lines.push_back(ftxui::text(std::format(
+                                    "   … {} more", choices_.size() - shown)) |
+                                ftxui::color(muted));
+            }
+        } else if (open_) {
             const auto found = matches();
 
             std::size_t width = 0;

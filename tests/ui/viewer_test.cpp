@@ -3,8 +3,13 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <expected>
+#include <filesystem>
 #include <format>
+#include <fstream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -20,13 +25,74 @@
 #include <gtest/gtest.h>
 
 #include "shmscope/core/source.hpp"
+#include "shmscope/layout/dialects/ksy_dialect.hpp"
+#include "shmscope/layout/document.hpp"
+#include "shmscope/layout/load_layout.hpp"
+#include "shmscope/layout/model.hpp"
+#include "shmscope/layout/readers/yaml_reader.hpp"
 
 namespace {
 
     using shmscope::Frame;
     using shmscope::HEAT_MAX;
+    using shmscope::Layout;
     using shmscope::Source;
     using shmscope::Viewer;
+
+    constexpr std::string_view COUNTED = R"(meta: {id: counted, endian: le}
+seq:
+  - {id: n, type: u1}
+  - {id: v, type: u1, repeat: expr, repeat-expr: n}
+)";
+
+    constexpr std::string_view TOO_BIG = R"(meta: {id: too_big, endian: le}
+seq:
+  - {id: a, type: u1}
+  - {id: big, size: 1000}
+)";
+
+    constexpr std::string_view WIDE = R"(meta: {id: wide, endian: le}
+seq:
+  - {id: a, type: u2}
+  - {id: b, type: u4}
+  - {id: pad, size: 1}
+  - {id: c, size: 10}
+)";
+
+    constexpr std::string_view FAR = R"(meta: {id: far_away, endian: le}
+seq:
+  - {id: a, type: u1}
+instances:
+  far: {pos: 0x9000, type: u8}
+)";
+
+    constexpr std::string_view MOVING = R"(meta: {id: moving, endian: le}
+seq:
+  - {id: at, type: u2}
+instances:
+  item: {pos: at * 16, type: u2}
+)";
+
+    constexpr std::string_view MANY = R"(meta: {id: many, endian: le}
+seq:
+  - {id: v, type: u1, repeat: expr, repeat-expr: 60}
+)";
+
+    const auto FIELD_BACKGROUND = ftxui::Color::RGB(45, 55, 85);
+
+    Layout layoutFrom(std::string_view text) {
+        auto document = shmscope::YamlReader::read(text, "test.ksy");
+        if (!document) {
+            ADD_FAILURE() << shmscope::describe(document.error());
+            return {};
+        }
+        auto layout = shmscope::KsyDialect::load(*document, "test.ksy");
+        if (!layout) {
+            ADD_FAILURE() << shmscope::describe(layout.error());
+            return {};
+        }
+        return std::move(*layout);
+    }
 
     constexpr int HZ = 15;
     constexpr int SCREEN_WIDTH = 100;
@@ -109,6 +175,17 @@ namespace {
             return ftxui::Event::Mouse("", state);
         }
 
+        static ftxui::Event mouseAt(
+            ftxui::Mouse::Button button, int x, int y,
+            ftxui::Mouse::Motion motion = ftxui::Mouse::Pressed) {
+            ftxui::Mouse state;
+            state.button = button;
+            state.motion = motion;
+            state.x = x;
+            state.y = y;
+            return ftxui::Event::Mouse("", state);
+        }
+
         static int height() { return ftxui::Terminal::Size().dimy; }
 
         static std::size_t visibleRows() {
@@ -159,6 +236,18 @@ namespace {
             return draw().PixelAt(x, 2).foreground_color;
         }
 
+        ftxui::Color byteBackground(std::size_t col, int row = 0) {
+            const int gap = col >= 8 ? 1 : 0;
+            const int x = 13 + static_cast<int>(col * 3) + gap;
+            return draw().PixelAt(x, 2 + row).background_color;
+        }
+
+        ftxui::Color gapBackground(std::size_t col, int row = 0) {
+            const int gap = col >= 8 ? 1 : 0;
+            const int x = 13 + static_cast<int>(col * 3) + gap + 2;
+            return draw().PixelAt(x, 2 + row).background_color;
+        }
+
         bool byteInverted(std::size_t col, int row = 0) {
             const int gap = col >= 8 ? 1 : 0;
             const int x = 13 + static_cast<int>(col * 3) + gap;
@@ -167,7 +256,16 @@ namespace {
 
         int closes_ = 0;
         bool destroyed_ = false;
-        Viewer viewer_{HZ, [this] { ++closes_; }};
+        Viewer::LayoutLoader loadWith_{};
+        Viewer viewer_{HZ, [this] { ++closes_; },
+                       [this](const std::filesystem::path& file)
+                           -> std::expected<Layout, std::string> {
+                           if (!loadWith_) {
+                               return std::unexpected(
+                                   std::string("no loader in this test"));
+                           }
+                           return loadWith_(file);
+                       }};
     };
 
     TEST_F(ViewerTest, AttachPollsOnce) {
@@ -503,8 +601,8 @@ namespace {
         attach(1 << 20);
         press(ftxui::Event::Character('/'));
 
-        EXPECT_FALSE(shows(rowLabel((visibleRows() - 7) * 16)));
-        EXPECT_TRUE(shows(rowLabel((visibleRows() - 8) * 16)));
+        EXPECT_FALSE(shows(rowLabel((visibleRows() - 8) * 16)));
+        EXPECT_TRUE(shows(rowLabel((visibleRows() - 9) * 16)));
     }
 
     TEST_F(ViewerTest, ListsAllCommands) {
@@ -938,14 +1036,58 @@ namespace {
         EXPECT_EQ(closes_, 0);
     }
 
-    TEST_F(ViewerTest, MouseEventsAreLeftToTheTerminal) {
+    TEST_F(ViewerTest, WheelOverTheHexScrollsLikeTheArrows) {
         attach(4096);
         draw();
-        for (const auto button : {ftxui::Mouse::Left, ftxui::Mouse::WheelDown,
-                                  ftxui::Mouse::WheelUp, ftxui::Mouse::Right}) {
-            EXPECT_FALSE(press(mouse(button)));
-        }
-        EXPECT_EQ(firstRow(), 0U);
+
+        EXPECT_TRUE(press(mouseAt(ftxui::Mouse::WheelDown, 20, 5)));
+        EXPECT_TRUE(press(mouseAt(ftxui::Mouse::WheelDown, 20, 5)));
+        EXPECT_TRUE(shows("cursor 0x20 "));
+
+        EXPECT_TRUE(press(mouseAt(ftxui::Mouse::WheelUp, 20, 5)));
+        EXPECT_TRUE(shows("cursor 0x10 "));
+    }
+
+    TEST_F(ViewerTest, OtherButtonsAreLeftToTheTerminal) {
+        attach(4096);
+        draw();
+
+        EXPECT_FALSE(press(mouseAt(ftxui::Mouse::Right, 20, 5)));
+        EXPECT_FALSE(press(mouseAt(ftxui::Mouse::Middle, 20, 5)));
+        EXPECT_FALSE(
+            press(mouseAt(ftxui::Mouse::Left, 20, 5, ftxui::Mouse::Released)));
+        EXPECT_TRUE(shows("cursor 0x0 "));
+    }
+
+    TEST_F(ViewerTest, ClickingAByteMovesTheCursor) {
+        attach(4096);
+        draw();
+
+        EXPECT_TRUE(press(mouseAt(ftxui::Mouse::Left, 13 + 5 * 3, 4)));
+        EXPECT_TRUE(shows("cursor 0x25 "));
+        EXPECT_TRUE(byteInverted(5, 2));
+
+        EXPECT_TRUE(press(mouseAt(ftxui::Mouse::Left, 13 + 9 * 3 + 1 + 1, 3)));
+        EXPECT_TRUE(shows("cursor 0x19 "));
+    }
+
+    TEST_F(ViewerTest, ClicksOutsideTheBytesAreIgnored) {
+        attach(4096);
+        draw();
+
+        EXPECT_FALSE(press(mouseAt(ftxui::Mouse::Left, 5, 4)));
+        EXPECT_FALSE(press(mouseAt(ftxui::Mouse::Left, 13 + 8 * 3, 4)));
+        EXPECT_FALSE(press(mouseAt(ftxui::Mouse::Left, 13 + 16 * 3 + 2, 4)));
+        EXPECT_FALSE(press(mouseAt(ftxui::Mouse::Left, 20, 1)));
+        EXPECT_TRUE(shows("cursor 0x0 "));
+    }
+
+    TEST_F(ViewerTest, ClickingPastTheLastByteIsIgnored) {
+        attach(20);
+        draw();
+
+        EXPECT_FALSE(press(mouseAt(ftxui::Mouse::Left, 13 + 6 * 3, 3)));
+        EXPECT_TRUE(shows("cursor 0x0 "));
     }
 
     TEST_F(ViewerTest, ArrowKeysFromTheWheelScrollInLive) {
@@ -1209,6 +1351,829 @@ namespace {
         press(ftxui::Event::End);
         EXPECT_TRUE(shows("cursor 0x0 "));
         EXPECT_TRUE(shows("u8      –"));
+    }
+
+    TEST_F(ViewerTest, NoLayoutShowsNoLayoutState) {
+        attach(64);
+
+        EXPECT_FALSE(shows("fields"));
+    }
+
+    TEST_F(ViewerTest, LayoutShowsIdAndFieldCount) {
+        auto& fake = attach(64);
+        fake.bytes()[0] = std::byte{3};
+        viewer_.tick();
+        viewer_.setLayout(layoutFrom(COUNTED));
+
+        EXPECT_TRUE(shows(" counted · 5 fields "));
+        EXPECT_FALSE(shows("problems"));
+    }
+
+    TEST_F(ViewerTest, LayoutSetBeforeAttachIsApplied) {
+        viewer_.setLayout(layoutFrom(COUNTED));
+        EXPECT_TRUE(shows(" counted · 0 fields "));
+
+        attach(64);
+
+        EXPECT_TRUE(shows(" counted · 2 fields "));
+    }
+
+    TEST_F(ViewerTest, TickPlacesTheNewBytes) {
+        auto& fake = attach(64);
+        viewer_.setLayout(layoutFrom(COUNTED));
+        EXPECT_TRUE(shows(" counted · 2 fields "));
+
+        fake.bytes()[0] = std::byte{4};
+        viewer_.tick();
+
+        EXPECT_TRUE(shows(" counted · 6 fields "));
+    }
+
+    TEST_F(ViewerTest, FrozenKeepsThePlacement) {
+        auto& fake = attach(64);
+        viewer_.setLayout(layoutFrom(COUNTED));
+        press(ftxui::Event::Character(' '));
+
+        fake.bytes()[0] = std::byte{4};
+        viewer_.tick();
+        EXPECT_TRUE(shows(" counted · 2 fields "));
+
+        press(ftxui::Event::Character(' '));
+        viewer_.tick();
+        EXPECT_TRUE(shows(" counted · 6 fields "));
+    }
+
+    TEST_F(ViewerTest, ProblemsAreCounted) {
+        attach(64);
+        viewer_.setLayout(layoutFrom(TOO_BIG));
+
+        EXPECT_TRUE(shows(" too_big · 1 field · 1 problem "));
+    }
+
+    TEST_F(ViewerTest, DetachKeepsTheLayoutButNotTheFields) {
+        attach(64);
+        viewer_.setLayout(layoutFrom(COUNTED));
+        viewer_.detach();
+
+        EXPECT_TRUE(shows(" counted · 0 fields "));
+    }
+
+    TEST_F(ViewerTest, ClearingTheLayoutHidesIt) {
+        attach(64);
+        viewer_.setLayout(layoutFrom(COUNTED));
+        viewer_.setLayout(std::nullopt);
+
+        EXPECT_FALSE(shows("counted"));
+        EXPECT_FALSE(shows("fields"));
+    }
+
+    TEST_F(ViewerTest, ReplacingTheLayoutPlacesAgain) {
+        attach(64);
+        viewer_.setLayout(layoutFrom(TOO_BIG));
+        viewer_.setLayout(layoutFrom(COUNTED));
+
+        EXPECT_TRUE(shows(" counted · 2 fields "));
+        EXPECT_FALSE(shows("problems"));
+    }
+
+    TEST_F(ViewerTest, TheSidePaneStartsRightAfterTheHex) {
+        attach(64);
+        const auto screen = draw();
+
+        EXPECT_EQ(screen.PixelAt(1 + 61, 2).character, "│");
+    }
+
+    TEST_F(ViewerTest, TheFieldPanelLeavesRoomForWholeHexRows) {
+        attach(64);
+        viewer_.setLayout(layoutFrom(COUNTED));
+
+        EXPECT_TRUE(shows("08 09 0a 0b 0c 0d 0e 0f"));
+        EXPECT_TRUE(
+            shows("00000010  10 11 12 13 14 15 16 17  "
+                  "18 19 1a 1b 1c 1d 1e 1f"));
+    }
+
+    TEST_F(ViewerTest, LayoutShowsTheFieldPanelInsteadOfTheInspector) {
+        attach(64);
+        EXPECT_TRUE(shows("cursor 0x0"));
+
+        viewer_.setLayout(layoutFrom(COUNTED));
+
+        EXPECT_FALSE(shows("cursor 0x0"));
+        EXPECT_TRUE(shows(" n  "));
+        EXPECT_TRUE(shows(" v  "));
+    }
+
+    TEST_F(ViewerTest, FieldPanelFollowsTheCursor) {
+        auto& fake = attach(64);
+        fake.bytes()[0] = std::byte{3};
+        viewer_.tick();
+        viewer_.setLayout(layoutFrom(COUNTED));
+        EXPECT_TRUE(shows(" n  "));
+
+        press(ftxui::Event::ArrowRight);
+        press(ftxui::Event::ArrowRight);
+
+        EXPECT_TRUE(shows(" v[1]  "));
+    }
+
+    TEST_F(ViewerTest, FieldPanelSaysWhenTheCursorIsOutsideEveryField) {
+        attach(64);
+        viewer_.setLayout(layoutFrom(COUNTED));
+        press(ftxui::Event::ArrowRight);
+
+        EXPECT_TRUE(shows("no field at the cursor"));
+    }
+
+    TEST_F(ViewerTest, FieldPanelListsProblems) {
+        attach(64);
+        viewer_.setLayout(layoutFrom(TOO_BIG));
+
+        EXPECT_TRUE(shows(" 1 problem "));
+        EXPECT_TRUE(shows("big: 1000 bytes at offset 1"));
+    }
+
+    TEST_F(ViewerTest, IKeySwitchesBetweenFieldsAndInspector) {
+        attach(64);
+        viewer_.setLayout(layoutFrom(COUNTED));
+
+        EXPECT_TRUE(press(ftxui::Event::Character('i')));
+        EXPECT_TRUE(shows("cursor 0x0"));
+
+        EXPECT_TRUE(press(ftxui::Event::Character('i')));
+        EXPECT_FALSE(shows("cursor 0x0"));
+    }
+
+    TEST_F(ViewerTest, IKeyDoesNothingWithoutALayout) {
+        attach(64);
+
+        EXPECT_FALSE(press(ftxui::Event::Character('i')));
+        EXPECT_TRUE(shows("cursor 0x0"));
+    }
+
+    TEST_F(ViewerTest, InspectorAndFieldsCommands) {
+        attach(64);
+        viewer_.setLayout(layoutFrom(COUNTED));
+
+        command("inspector");
+        EXPECT_TRUE(shows("cursor 0x0"));
+
+        command("fields");
+        EXPECT_FALSE(shows("cursor 0x0"));
+    }
+
+    TEST_F(ViewerTest, FieldsCommandsNeedALayout) {
+        attach(64);
+
+        command("fields");
+
+        EXPECT_TRUE(shows("unknown command /fields"));
+    }
+
+    TEST_F(ViewerTest, SelectedFieldBytesAreHighlighted) {
+        attach(64);
+        viewer_.setLayout(layoutFrom(WIDE));
+        press(ftxui::Event::ArrowRight);
+        press(ftxui::Event::ArrowRight);
+        press(ftxui::Event::ArrowRight);
+
+        EXPECT_NE(byteBackground(1), FIELD_BACKGROUND);
+        for (std::size_t col = 2; col <= 5; ++col) {
+            EXPECT_EQ(byteBackground(col), FIELD_BACKGROUND) << col;
+        }
+        EXPECT_NE(byteBackground(6), FIELD_BACKGROUND);
+    }
+
+    TEST_F(ViewerTest, GapsInsideTheFieldAreHighlighted) {
+        attach(64);
+        viewer_.setLayout(layoutFrom(WIDE));
+        press(ftxui::Event::ArrowRight);
+        press(ftxui::Event::ArrowRight);
+
+        EXPECT_NE(gapBackground(1), FIELD_BACKGROUND);
+        EXPECT_EQ(gapBackground(2), FIELD_BACKGROUND);
+        EXPECT_EQ(gapBackground(4), FIELD_BACKGROUND);
+        EXPECT_NE(gapBackground(5), FIELD_BACKGROUND);
+    }
+
+    TEST_F(ViewerTest, HighlightStopsAtTheMiddleAndEndOfARow) {
+        attach(64);
+        viewer_.setLayout(layoutFrom(WIDE));
+        command("field c");
+
+        EXPECT_EQ(byteBackground(7), FIELD_BACKGROUND);
+        EXPECT_EQ(byteBackground(8), FIELD_BACKGROUND);
+        EXPECT_NE(gapBackground(7), FIELD_BACKGROUND);
+        EXPECT_EQ(byteBackground(15), FIELD_BACKGROUND);
+        EXPECT_NE(gapBackground(15), FIELD_BACKGROUND);
+        EXPECT_EQ(byteBackground(0, 1), FIELD_BACKGROUND);
+        EXPECT_NE(byteBackground(1, 1), FIELD_BACKGROUND);
+    }
+
+    TEST_F(ViewerTest, TheCursorByteStaysInverted) {
+        attach(64);
+        viewer_.setLayout(layoutFrom(WIDE));
+        press(ftxui::Event::ArrowRight);
+        press(ftxui::Event::ArrowRight);
+
+        EXPECT_TRUE(byteInverted(2));
+        EXPECT_FALSE(byteInverted(3));
+    }
+
+    TEST_F(ViewerTest, NothingIsHighlightedWithoutALayout) {
+        attach(64);
+
+        for (std::size_t col = 0; col < 16; ++col) {
+            EXPECT_NE(byteBackground(col), FIELD_BACKGROUND) << col;
+        }
+    }
+
+    TEST_F(ViewerTest, NothingIsHighlightedOutsideEveryField) {
+        attach(64);
+        viewer_.setLayout(layoutFrom(WIDE));
+        command("jump 30");
+
+        for (std::size_t col = 0; col < 16; ++col) {
+            EXPECT_NE(byteBackground(col), FIELD_BACKGROUND) << col;
+        }
+    }
+
+    TEST_F(ViewerTest, InspectorKeepsTheHighlight) {
+        attach(64);
+        viewer_.setLayout(layoutFrom(WIDE));
+        press(ftxui::Event::Character('i'));
+
+        EXPECT_EQ(byteBackground(0), FIELD_BACKGROUND);
+        EXPECT_EQ(byteBackground(1), FIELD_BACKGROUND);
+    }
+
+    TEST_F(ViewerTest, FieldCommandMovesTheCursor) {
+        attach(64);
+        viewer_.setLayout(layoutFrom(WIDE));
+
+        command("field b");
+
+        EXPECT_TRUE(byteInverted(2));
+        EXPECT_TRUE(shows(" b  "));
+    }
+
+    TEST_F(ViewerTest, FieldCommandScrollsToFarFields) {
+        attach(64 * 1024);
+        viewer_.setLayout(layoutFrom(FAR));
+
+        command("field far");
+
+        EXPECT_TRUE(shows(rowLabel(0x9000)));
+        EXPECT_TRUE(shows(" far  "));
+        EXPECT_FALSE(shows("00000000  "));
+    }
+
+    TEST_F(ViewerTest, FieldCommandIgnoresTrailingSpaces) {
+        attach(64);
+        viewer_.setLayout(layoutFrom(WIDE));
+
+        command("field b  ");
+
+        EXPECT_TRUE(byteInverted(2));
+    }
+
+    TEST_F(ViewerTest, FieldCommandRejectsUnknownPaths) {
+        attach(64);
+        viewer_.setLayout(layoutFrom(WIDE));
+
+        command("field nope");
+
+        EXPECT_TRUE(shows("no field 'nope' is placed"));
+        EXPECT_TRUE(byteInverted(0));
+    }
+
+    TEST_F(ViewerTest, FieldCommandNeedsALayout) {
+        attach(64);
+
+        command("field a");
+
+        EXPECT_TRUE(shows("unknown command /field"));
+    }
+
+    class LayoutCommandTest : public ViewerTest {
+    protected:
+        void SetUp() override {
+            dir_ = std::filesystem::temp_directory_path() /
+                   std::format("shmscope-layouts-{}",
+                               ::testing::UnitTest::GetInstance()
+                                   ->current_test_info()
+                                   ->name());
+            std::filesystem::remove_all(dir_);
+            std::filesystem::create_directories(dir_);
+            loadWith_ = [](const std::filesystem::path& file)
+                -> std::expected<Layout, std::string> {
+                auto layout = shmscope::loadLayout(file);
+                if (!layout) {
+                    return std::unexpected(shmscope::describe(layout.error()));
+                }
+                return std::move(*layout);
+            };
+            attach(64);
+        }
+
+        void TearDown() override { std::filesystem::remove_all(dir_); }
+
+        std::filesystem::path write(std::string_view name,
+                                    std::string_view text) {
+            const auto file = dir_ / name;
+            std::ofstream(file) << text;
+            return file;
+        }
+
+        void load(const std::filesystem::path& file) {
+            command("layout " + file.string());
+        }
+
+        std::filesystem::path dir_{};
+    };
+
+    class ScopedEnv {
+    public:
+        ScopedEnv(const char* name, const std::string& value) : name_(name) {
+            if (const char* old = std::getenv(name)) old_ = old;
+            ::setenv(name, value.c_str(), 1);
+        }
+
+        ScopedEnv(const ScopedEnv&) = delete;
+        ScopedEnv& operator=(const ScopedEnv&) = delete;
+        ScopedEnv(ScopedEnv&&) = delete;
+        ScopedEnv& operator=(ScopedEnv&&) = delete;
+
+        ~ScopedEnv() {
+            if (old_) {
+                ::setenv(name_, old_->c_str(), 1);
+            } else {
+                ::unsetenv(name_);
+            }
+        }
+
+    private:
+        const char* name_;
+        std::optional<std::string> old_{};
+    };
+
+    class ScopedDirectory {
+    public:
+        explicit ScopedDirectory(const std::filesystem::path& to)
+            : old_(std::filesystem::current_path()) {
+            std::filesystem::current_path(to);
+        }
+
+        ScopedDirectory(const ScopedDirectory&) = delete;
+        ScopedDirectory& operator=(const ScopedDirectory&) = delete;
+        ScopedDirectory(ScopedDirectory&&) = delete;
+        ScopedDirectory& operator=(ScopedDirectory&&) = delete;
+
+        ~ScopedDirectory() { std::filesystem::current_path(old_); }
+
+    private:
+        std::filesystem::path old_;
+    };
+
+    TEST_F(LayoutCommandTest, LoadsAFile) {
+        load(write("counted.ksy", COUNTED));
+
+        EXPECT_TRUE(shows(" counted · 2 fields "));
+        EXPECT_FALSE(shows("cursor 0x0"));
+    }
+
+    TEST_F(LayoutCommandTest, SwapsOneLayoutForAnother) {
+        load(write("counted.ksy", COUNTED));
+        load(write("wide.ksy", WIDE));
+
+        EXPECT_TRUE(shows(" wide · 4 fields "));
+        EXPECT_FALSE(shows("counted"));
+    }
+
+    TEST_F(LayoutCommandTest, ABadFileKeepsTheCurrentLayout) {
+        load(write("counted.ksy", COUNTED));
+        write("bad.ksy",
+              "meta: {id: bad, endian: le}\nseq: [{id: a, "
+              "type: u3}]\n");
+        {
+            const ScopedDirectory inside(dir_);
+            command("layout bad.ksy");
+        }
+
+        EXPECT_TRUE(shows("   bad.ksy:2:"));
+        EXPECT_TRUE(shows(" counted · 2 fields "));
+    }
+
+    TEST_F(LayoutCommandTest, ErrorsNameTheFileAsTyped) {
+        write("bad.ksy", "meta: [");
+        {
+            const ScopedDirectory inside(dir_);
+            command("layout bad.ksy");
+        }
+
+        EXPECT_TRUE(shows("   bad.ksy:"));
+        EXPECT_FALSE(shows(dir_.string()));
+    }
+
+    TEST_F(LayoutCommandTest, AMissingFileIsAnError) {
+        {
+            const ScopedDirectory inside(dir_);
+            command("layout missing.ksy");
+        }
+
+        EXPECT_TRUE(shows("missing.ksy"));
+        EXPECT_TRUE(shows("cursor 0x0"));
+    }
+
+    TEST_F(LayoutCommandTest, OffRemovesTheLayout) {
+        load(write("counted.ksy", COUNTED));
+
+        command("layout off");
+
+        EXPECT_FALSE(shows("counted"));
+        EXPECT_TRUE(shows("cursor 0x0"));
+    }
+
+    TEST_F(LayoutCommandTest, OffWithoutALayoutIsAnError) {
+        command("layout off");
+
+        EXPECT_TRUE(shows("no layout is loaded"));
+    }
+
+    TEST_F(LayoutCommandTest, ReloadReadsTheFileAgain) {
+        const auto file = write("live.ksy", COUNTED);
+        load(file);
+
+        write("live.ksy", WIDE);
+        command("layout reload");
+
+        EXPECT_TRUE(shows(" wide · 4 fields "));
+    }
+
+    TEST_F(LayoutCommandTest, ABrokenReloadKeepsTheCurrentLayout) {
+        const auto file = write("live.ksy", COUNTED);
+        load(file);
+
+        write("live.ksy", "meta: [");
+        command("layout reload");
+
+        EXPECT_TRUE(shows("   /"));
+        EXPECT_TRUE(shows(" counted · 2 fields "));
+
+        write("live.ksy", WIDE);
+        press(ftxui::Event::Escape);
+        command("layout reload");
+        EXPECT_TRUE(shows(" wide · 4 fields "));
+    }
+
+    TEST_F(LayoutCommandTest, ReloadWithoutAFileIsAnError) {
+        command("layout reload");
+
+        EXPECT_TRUE(shows("no layout file to reload"));
+    }
+
+    TEST_F(LayoutCommandTest, OffForgetsTheFile) {
+        load(write("counted.ksy", COUNTED));
+        command("layout off");
+
+        command("layout reload");
+
+        EXPECT_TRUE(shows("no layout file to reload"));
+    }
+
+    TEST_F(LayoutCommandTest, RelativePathsStartFromTheWorkingDirectory) {
+        write("counted.ksy", COUNTED);
+        {
+            const ScopedDirectory inside(dir_);
+            command("layout counted.ksy");
+        }
+
+        EXPECT_TRUE(shows(" counted · 2 fields "));
+
+        write("counted.ksy", WIDE);
+        command("layout reload");
+        EXPECT_TRUE(shows(" wide · 4 fields "));
+    }
+
+    TEST_F(LayoutCommandTest, TildeIsTheHomeDirectory) {
+        write("counted.ksy", COUNTED);
+        const ScopedEnv home("HOME", dir_.string());
+
+        command("layout ~/counted.ksy");
+
+        EXPECT_TRUE(shows(" counted · 2 fields "));
+    }
+
+    TEST_F(LayoutCommandTest, TabCompletesLayoutFiles) {
+        write("counted.ksy", COUNTED);
+        write("notes.txt", "not a layout");
+        std::filesystem::create_directories(dir_ / "more");
+        {
+            const ScopedDirectory inside(dir_);
+            press(ftxui::Event::Character('/'));
+            type("layout c");
+            press(ftxui::Event::Tab);
+            EXPECT_TRUE(shows("› /layout counted.ksy"));
+            press(ftxui::Event::Return);
+        }
+
+        EXPECT_TRUE(shows(" counted · 2 fields "));
+    }
+
+    TEST_F(LayoutCommandTest, TabListsDirectoriesAndLayoutsOnly) {
+        write("counted.ksy", COUNTED);
+        write("notes.txt", "not a layout");
+        std::filesystem::create_directories(dir_ / "more");
+
+        const ScopedDirectory inside(dir_);
+        press(ftxui::Event::Character('/'));
+        type("layout ");
+        press(ftxui::Event::Tab);
+
+        EXPECT_TRUE(shows("   counted.ksy"));
+        EXPECT_TRUE(shows("   more/"));
+        EXPECT_FALSE(shows("notes.txt"));
+    }
+
+    TEST_F(LayoutCommandTest, TabCompletesTheKeywords) {
+        load(write("counted.ksy", COUNTED));
+
+        press(ftxui::Event::Character('/'));
+        type("layout rel");
+        press(ftxui::Event::Tab);
+
+        EXPECT_TRUE(shows("› /layout reload"));
+    }
+
+    TEST_F(LayoutCommandTest, TrailingSpacesAreIgnored) {
+        load(write("counted.ksy", COUNTED));
+
+        command("layout off   ");
+
+        EXPECT_FALSE(shows("counted"));
+    }
+
+    TEST_F(LayoutCommandTest, LoadingStopsTrackingAndKeepsTheSource) {
+        load(write("counted.ksy", COUNTED));
+        command("field v");
+        EXPECT_TRUE(shows("tracking"));
+
+        load(write("wide.ksy", WIDE));
+
+        EXPECT_FALSE(shows("tracking"));
+        EXPECT_TRUE(shows("/fake"));
+    }
+
+    TEST_F(ViewerTest, LayoutNeedsALoader) {
+        Viewer bare{HZ, [] {}};
+        bare.component()->OnEvent(ftxui::Event::Character('/'));
+        for (const char c : std::string_view("layout x.ksy")) {
+            bare.component()->OnEvent(ftxui::Event::Character(c));
+        }
+        bare.component()->OnEvent(ftxui::Event::Return);
+
+        auto screen = ftxui::Screen(SCREEN_WIDTH, height());
+        ftxui::Render(screen, bare.component()->Render());
+
+        EXPECT_NE(screen.ToString().find("loading layouts is not available"),
+                  std::string::npos);
+    }
+
+    class PanelMouseTest : public ViewerTest {
+    protected:
+        static constexpr int PANEL_X = 85;
+        static constexpr int FIRST_ROW_Y = 3;
+
+        void SetUp() override {
+            attach(256);
+            viewer_.setLayout(layoutFrom(MANY));
+            draw();
+        }
+
+        void wheel(ftxui::Mouse::Button button, int times, int x = PANEL_X) {
+            for (int i = 0; i < times; ++i) {
+                press(mouseAt(button, x, 10));
+            }
+        }
+    };
+
+    TEST_F(PanelMouseTest, TheListStartsAtTheTop) {
+        EXPECT_TRUE(shows("   [0] "));
+        EXPECT_TRUE(shows(" v[0] "));
+    }
+
+    TEST_F(PanelMouseTest, WheelOverThePanelScrollsOnlyThePanel) {
+        wheel(ftxui::Mouse::WheelDown, 5);
+
+        EXPECT_FALSE(shows("   [0] "));
+        EXPECT_TRUE(shows("   [5] "));
+        EXPECT_EQ(firstRow(), 0U);
+        EXPECT_TRUE(byteInverted(0));
+    }
+
+    TEST_F(PanelMouseTest, WheelUpStopsAtTheTop) {
+        wheel(ftxui::Mouse::WheelDown, 2);
+        wheel(ftxui::Mouse::WheelUp, 10);
+
+        EXPECT_TRUE(shows(" v      "));
+        EXPECT_TRUE(shows("   [0] "));
+    }
+
+    TEST_F(PanelMouseTest, WheelDownStopsAtTheEnd) {
+        wheel(ftxui::Mouse::WheelDown, 500);
+
+        EXPECT_TRUE(shows("   [59] "));
+        EXPECT_FALSE(shows("   [0] "));
+    }
+
+    TEST_F(PanelMouseTest, TheScrolledPanelSurvivesATick) {
+        wheel(ftxui::Mouse::WheelDown, 5);
+        viewer_.tick();
+
+        EXPECT_FALSE(shows("   [0] "));
+    }
+
+    TEST_F(PanelMouseTest, WheelOverTheHexStillScrollsTheHex) {
+        wheel(ftxui::Mouse::WheelDown, 2, 20);
+
+        EXPECT_TRUE(byteInverted(0, 2));
+        EXPECT_TRUE(shows(" v[32] "));
+    }
+
+    TEST_F(PanelMouseTest, KeysBringThePanelBackToTheCursor) {
+        wheel(ftxui::Mouse::WheelDown, 20);
+        EXPECT_FALSE(shows("   [0] "));
+
+        press(ftxui::Event::ArrowRight);
+
+        EXPECT_TRUE(shows("   [0] "));
+        EXPECT_TRUE(shows(" v[1] "));
+    }
+
+    TEST_F(PanelMouseTest, ClickingARowSelectsThatField) {
+        EXPECT_TRUE(
+            press(mouseAt(ftxui::Mouse::Left, PANEL_X, FIRST_ROW_Y + 3)));
+
+        EXPECT_TRUE(shows(" v[2] "));
+        EXPECT_TRUE(byteInverted(2));
+    }
+
+    TEST_F(PanelMouseTest, ClickingAfterScrollingKeepsTheList) {
+        wheel(ftxui::Mouse::WheelDown, 10);
+        press(mouseAt(ftxui::Mouse::Left, PANEL_X, FIRST_ROW_Y));
+
+        EXPECT_TRUE(shows(" v[9] "));
+        EXPECT_TRUE(byteInverted(9));
+        EXPECT_FALSE(shows("   [0] "));
+    }
+
+    TEST_F(PanelMouseTest, ClicksOnTheHeaderAreIgnored) {
+        EXPECT_FALSE(press(mouseAt(ftxui::Mouse::Left, PANEL_X, 1)));
+        EXPECT_FALSE(press(mouseAt(ftxui::Mouse::Left, PANEL_X, 2)));
+    }
+
+    TEST_F(PanelMouseTest, ClickingStopsTracking) {
+        command("field v[40]");
+        EXPECT_TRUE(shows("tracking"));
+
+        press(mouseAt(ftxui::Mouse::Left, PANEL_X, FIRST_ROW_Y + 1));
+
+        EXPECT_FALSE(shows("tracking"));
+    }
+
+    TEST_F(PanelMouseTest, TheInspectorTakesNoPanelScrolling) {
+        press(ftxui::Event::Character('i'));
+
+        wheel(ftxui::Mouse::WheelDown, 2);
+
+        EXPECT_TRUE(shows("cursor 0x20 "));
+    }
+
+    class TrackingTest : public ViewerTest {
+    protected:
+        void SetUp() override {
+            fake_ = &attach(64 * 1024);
+            moveItemTo(2);
+            viewer_.setLayout(layoutFrom(MOVING));
+            draw();
+        }
+
+        void moveItemTo(std::uint16_t row) {
+            fake_->bytes()[0] = static_cast<std::byte>(row & 0xff);
+            fake_->bytes()[1] = static_cast<std::byte>(row >> 8);
+            viewer_.tick();
+        }
+
+        FakeSource* fake_ = nullptr;
+    };
+
+    TEST_F(TrackingTest, FieldCommandStartsTracking) {
+        command("field item");
+
+        EXPECT_EQ(firstRow(), 0x20U);
+        EXPECT_TRUE(byteInverted(0));
+        EXPECT_TRUE(shows(" tracking item "));
+    }
+
+    TEST_F(TrackingTest, TheCursorFollowsTheFieldEachTick) {
+        command("field item");
+
+        moveItemTo(3);
+
+        EXPECT_EQ(firstRow(), 0x20U);
+        EXPECT_TRUE(byteInverted(0, 1));
+        EXPECT_FALSE(byteInverted(0));
+        EXPECT_TRUE(shows(" item  "));
+    }
+
+    TEST_F(TrackingTest, FarMovesScrollTheView) {
+        command("field item");
+
+        moveItemTo(0x900);
+
+        EXPECT_TRUE(shows(rowLabel(0x9000)));
+        EXPECT_FALSE(shows("00000000  "));
+        EXPECT_TRUE(byteInverted(0));
+    }
+
+    TEST_F(TrackingTest, MovingTheCursorStopsTracking) {
+        command("field item");
+        press(ftxui::Event::ArrowRight);
+        EXPECT_FALSE(shows("tracking"));
+
+        moveItemTo(3);
+
+        EXPECT_TRUE(byteInverted(1));
+        EXPECT_FALSE(byteInverted(0, 1));
+    }
+
+    TEST_F(TrackingTest, OtherNavigationStopsTracking) {
+        for (const auto& stop :
+             {ftxui::Event::ArrowDown, ftxui::Event::PageUp, ftxui::Event::Home,
+              ftxui::Event::End, ftxui::Event::Character('f')}) {
+            command("field item");
+            press(stop);
+            EXPECT_FALSE(shows("tracking")) << stop.input();
+            press(ftxui::Event::Character('f'));
+            press(ftxui::Event::Character('f'));
+        }
+    }
+
+    TEST_F(TrackingTest, CommandsStopTracking) {
+        for (const auto* stop : {"jump 40", "follow", "live", "untrack"}) {
+            command("field item");
+            command(stop);
+            EXPECT_FALSE(shows("tracking")) << stop;
+            command("hex");
+            command("unfollow");
+        }
+    }
+
+    TEST_F(TrackingTest, UntrackIsOnlyOfferedWhileTracking) {
+        command("untrack");
+
+        EXPECT_TRUE(shows("unknown command /untrack"));
+    }
+
+    TEST_F(TrackingTest, AMissingFieldKeepsTheCursorAndTheTracking) {
+        command("field item");
+
+        moveItemTo(0xffff);
+
+        EXPECT_TRUE(shows(" tracking item "));
+        EXPECT_TRUE(byteInverted(0));
+    }
+
+    TEST_F(TrackingTest, FrozenViewsDoNotMove) {
+        command("field item");
+        press(ftxui::Event::Character(' '));
+
+        moveItemTo(3);
+
+        EXPECT_TRUE(byteInverted(0));
+        EXPECT_FALSE(byteInverted(0, 1));
+    }
+
+    TEST_F(TrackingTest, ReplacingTheLayoutStopsTracking) {
+        command("field item");
+        viewer_.setLayout(layoutFrom(MOVING));
+
+        EXPECT_FALSE(shows("tracking"));
+    }
+
+    TEST_F(TrackingTest, ReattachingStopsTracking) {
+        command("field item");
+        attach(64);
+
+        EXPECT_FALSE(shows("tracking"));
+    }
+
+    TEST_F(ViewerTest, ClearingTheLayoutBringsBackTheInspector) {
+        attach(64);
+        viewer_.setLayout(layoutFrom(COUNTED));
+        viewer_.setLayout(std::nullopt);
+
+        EXPECT_TRUE(shows("cursor 0x0"));
     }
 
 }  // namespace
