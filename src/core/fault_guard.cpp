@@ -1,5 +1,6 @@
 #include "shmscope/core/fault_guard.hpp"
 
+#include <atomic>
 #include <csetjmp>
 #include <csignal>
 #include <cstddef>
@@ -13,7 +14,7 @@ namespace shmscope {
 
     namespace {
 
-        thread_local sigjmp_buf* active = nullptr;
+        thread_local sigjmp_buf* volatile active = nullptr;
         struct sigaction chained{};
 
         extern "C" void onFault(const int signal, siginfo_t* info,
@@ -55,7 +56,9 @@ namespace shmscope {
                 return false;
             }
             active = &jump;
+            std::atomic_signal_fence(std::memory_order_seq_cst);
             fn();
+            std::atomic_signal_fence(std::memory_order_seq_cst);
             active = nullptr;
             return true;
         }
