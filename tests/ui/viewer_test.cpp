@@ -2209,10 +2209,9 @@ seq:
     TEST_F(ViewerTest, ReopenAttachesWhatTheNameOpensNow) {
         attach(64, "/seg");
         std::string asked;
-        bool destroyed = false;
         openWith_ = [&](std::string_view name) -> shmscope::OpenResult {
             asked = std::string(name);
-            return std::make_unique<FakeSource>("/seg", 128, &destroyed);
+            return std::make_unique<FakeSource>("/seg", 128, nullptr);
         };
 
         command("reopen");
