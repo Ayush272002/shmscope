@@ -21,6 +21,7 @@
 #include "shmscope/core/default_formatters.hpp"
 #include "shmscope/core/format.hpp"
 #include "shmscope/layout/document.hpp"
+#include "shmscope/layout/expression.hpp"
 #include "shmscope/layout/model.hpp"
 
 namespace shmscope {
@@ -170,6 +171,13 @@ namespace shmscope {
                                                    : entry->location;
         }
 
+        Location within(const Location start, const std::size_t column) {
+            if (!start.known() || column == 0) return start;
+
+            return {.line = start.line,
+                    .column = start.column + static_cast<int>(column) - 1};
+        }
+
         class Builder {
         public:
             explicit Builder(std::string_view source) : source_(source) {}
@@ -300,8 +308,19 @@ namespace shmscope {
                     return fail(node.location(), path,
                                 std::format("{} is empty", what));
                 }
+
+                auto program = compile(*text);
+                if (!program) {
+                    return fail(within(node.location(), program.error().column),
+                                path,
+                                std::format("in \"{}\" at column {}: {}", *text,
+                                            program.error().column,
+                                            program.error().message));
+                }
+
                 return Expression{.text = std::move(*text),
-                                  .location = node.location()};
+                                  .location = node.location(),
+                                  .program = std::move(*program)};
             }
 
             Status parseMeta(const Node& meta) {
