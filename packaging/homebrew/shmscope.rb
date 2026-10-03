@@ -1,28 +1,17 @@
 class Shmscope < Formula
   desc "Live terminal viewer for POSIX shared memory"
   homepage "https://github.com/Ayush272002/shmscope"
-  url "https://github.com/Ayush272002/shmscope/archive/refs/tags/v0.0.0.tar.gz"
+  url "https://github.com/Ayush272002/shmscope/releases/download/v0.0.0/shmscope-v0.0.0-macos-arm64.tar.gz"
+  version "0.0.0"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   license "Apache-2.0"
 
-  depends_on "cli11" => :build
-  depends_on "cmake" => :build
-  depends_on "nlohmann-json" => :build
-  depends_on "ftxui"
-  depends_on "highway"
+  depends_on arch: :arm64
   depends_on :macos
-  depends_on "yaml-cpp"
 
   def install
-    system "cmake", "-S", ".", "-B", "build",
-                    "-DSHMSCOPE_USE_CONAN=OFF",
-                    "-DSHMSCOPE_BUILD_TESTS=OFF",
-                    "-DSHMSCOPE_BUILD_BENCHMARKS=OFF",
-                    "-DSHMSCOPE_BUILD_EXAMPLES=OFF",
-                    *std_cmake_args
-    system "cmake", "--build", "build"
-    system "cmake", "--install", "build"
-    pkgshare.install "examples/ring.ksy", "examples/ring.yaml", "examples/ring.json"
+    bin.install "bin/shmscope"
+    pkgshare.install "examples"
   end
 
   test do
