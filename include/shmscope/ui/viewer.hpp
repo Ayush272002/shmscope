@@ -30,7 +30,8 @@ namespace shmscope {
         using LayoutLoader = std::function<std::expected<Layout, std::string>(
             const std::filesystem::path& file)>;
 
-        Viewer(int hz, CloseFn onClose, LayoutLoader loader = {});
+        Viewer(int hz, CloseFn onClose, LayoutLoader loader = {},
+               SourceOpener opener = {});
 
         Viewer(const Viewer&) = delete;
         Viewer& operator=(const Viewer&) = delete;
@@ -99,10 +100,12 @@ namespace shmscope {
         void track() noexcept;
         [[nodiscard]] std::optional<std::string> layoutCommand(
             std::string_view args);
+        [[nodiscard]] std::optional<std::string> reopen();
 
         int hz_;
         CloseFn onClose_;
         LayoutLoader loader_;
+        SourceOpener opener_;
         std::optional<std::filesystem::path> layoutFile_{};
         std::unique_ptr<Source> source_;
         Frame frame_{};

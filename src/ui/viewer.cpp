@@ -58,8 +58,12 @@ namespace shmscope {
 
     }  // namespace
 
-    Viewer::Viewer(int hz, CloseFn onClose, LayoutLoader loader)
-        : hz_(hz), onClose_(std::move(onClose)), loader_(std::move(loader)) {
+    Viewer::Viewer(int hz, CloseFn onClose, LayoutLoader loader,
+                   SourceOpener opener)
+        : hz_(hz),
+          onClose_(std::move(onClose)),
+          loader_(std::move(loader)),
+          opener_(std::move(opener)) {
         addCommands();
 
         root_ = ftxui::Renderer([this](bool /*focused*/) { return render(); }) |
@@ -114,6 +118,22 @@ namespace shmscope {
         return std::nullopt;
     }
 
+    std::optional<std::string> Viewer::reopen() {
+        if (!source_) return std::string("nothing is open");
+        if (!opener_) return std::string("reopening is not available");
+
+        auto source = opener_(std::string(source_->name()));
+        if (!source) return std::move(source.error());
+
+        const auto tracking = tracking_;
+        const auto cursor = cursor_;
+        attach(std::move(*source));
+        tracking_ = tracking;
+        setCursor(cursor);
+        track();
+        return std::nullopt;
+    }
+
     std::optional<std::string> Viewer::layoutCommand(std::string_view args) {
         while (args.ends_with(' ')) args.remove_suffix(1);
 
@@ -155,6 +175,9 @@ namespace shmscope {
     void Viewer::tick() noexcept {
         if (source_ && !frozen_) {
             frame_ = source_->poll();
+            if (!frame_.bytes.empty() && cursor_ >= frame_.bytes.size()) {
+                cursor_ = frame_.bytes.size() - 1;
+            }
             if (following_) follow();
             updatePlacement();
             track();
@@ -654,6 +677,15 @@ namespace shmscope {
             : following_ ? ftxui::text(" following ") | ftxui::color(accent)
             : live_      ? ftxui::text(" changes only ") | ftxui::color(accent)
                          : ftxui::emptyElement();
+        const auto health = source_ ? source_->state() : SourceState::LIVE;
+        auto segment = health == SourceState::REMOVED
+                           ? ftxui::text(" removed · showing the last data ") |
+                                 ftxui::color(ftxui::Color::Yellow)
+                       : health == SourceState::REPLACED
+                           ? ftxui::text(" recreated · /reopen ") |
+                                 ftxui::bold |
+                                 ftxui::color(ftxui::Color::Yellow)
+                           : ftxui::emptyElement();
         auto title = ftxui::vbox({
             ftxui::hbox({
                 spacer,
@@ -664,6 +696,7 @@ namespace shmscope {
                     ftxui::dim,
                 layoutState,
                 follow,
+                segment,
                 state,
                 spacer,
             }),
@@ -833,6 +866,12 @@ namespace shmscope {
                      return std::optional<std::string>{};
                  },
              .available = [this] { return tracking_.has_value(); }});
+        commandBar_.add(
+            {.name = "reopen",
+             .help = "open whatever the name points at now",
+             .run = [this](std::string_view) { return reopen(); },
+             .available =
+                 [this] { return source_ != nullptr && opener_ != nullptr; }});
         commandBar_.add({.name = "top",
                          .help = "go to the first row",
                          .run = [this](std::string_view) {

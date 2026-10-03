@@ -5,6 +5,7 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <format>
 #include <memory>
@@ -21,6 +22,7 @@ namespace {
     using shmscope::HEAT_MAX;
     using shmscope::ShmSource;
     using shmscope::Source;
+    using shmscope::SourceState;
 
 #ifdef __APPLE__
     constexpr std::size_t NAME_LIMIT = 31;
@@ -30,9 +32,11 @@ namespace {
 
     class TestSegment {
     public:
-        explicit TestSegment(std::size_t size) : size_(size) {
-            static std::atomic<int> counter{0};
-            name_ = std::format("/shmscope.t.{}.{}", ::getpid(), counter++);
+        explicit TestSegment(std::size_t size)
+            : TestSegment(uniqueName(), size) {}
+
+        TestSegment(std::string name, std::size_t size)
+            : name_(std::move(name)), size_(size) {
             fd_ = ::shm_open(name_.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
             if (fd_ < 0 || size_ == 0) {
                 return;
@@ -67,15 +71,46 @@ namespace {
 
         void write(std::size_t at, std::byte value) { base_[at] = value; }
 
+        void unlink() const { ::shm_unlink(name_.c_str()); }
+
+        bool resize(std::size_t size) {
+            if (::ftruncate(fd_, static_cast<off_t>(size)) != 0) return false;
+
+            ::munmap(base_, size_);
+            base_ = nullptr;
+            size_ = size;
+            if (size_ == 0) return true;
+
+            void* base = ::mmap(nullptr, size_, PROT_READ | PROT_WRITE,
+                                MAP_SHARED, fd_, 0);
+            if (base == MAP_FAILED) return false;
+            base_ = static_cast<std::byte*>(base);
+            return true;
+        }
+
     private:
+        static std::string uniqueName() {
+            static std::atomic<int> counter{0};
+            return std::format("/shmscope.t.{}.{}", ::getpid(), counter++);
+        }
+
         std::string name_;
         std::size_t size_;
         int fd_ = -1;
         std::byte* base_ = nullptr;
     };
 
-    std::unique_ptr<Source> openOrFail(std::string_view name) {
-        auto source = ShmSource::open(name);
+    constexpr shmscope::ShmOptions EVERY_POLL{.checkEvery =
+                                                  std::chrono::milliseconds(0)};
+
+    bool canResize() {
+        TestSegment probe(16384);
+        return probe.ready() && probe.resize(32768);
+    }
+
+    std::unique_ptr<Source> openOrFail(std::string_view name,
+                                       shmscope::ShmOptions options = {}) {
+        auto source = ShmSource::open(name, options);
         if (!source) {
             ADD_FAILURE() << "open failed: " << source.error();
             return nullptr;
@@ -401,6 +436,189 @@ namespace {
         auto source = ShmSource::open("shmscope.does.not.exist");
         ASSERT_FALSE(source.has_value());
         EXPECT_EQ(source.error().rfind("/shmscope.does.not.exist:", 0), 0U);
+    }
+
+    TEST(ShmSourceState, AnOpenObjectIsLive) {
+        TestSegment segment(4096);
+        ASSERT_TRUE(segment.ready());
+        auto source = openOrFail(segment.name(), EVERY_POLL);
+        ASSERT_NE(source, nullptr);
+
+        static_cast<void>(source->poll());
+
+        EXPECT_EQ(source->state(), SourceState::LIVE);
+    }
+
+    TEST(ShmSourceState, AnUnlinkedNameIsRemoved) {
+        TestSegment segment(4096);
+        ASSERT_TRUE(segment.ready());
+        segment.write(3, std::byte{9});
+        auto source = openOrFail(segment.name(), EVERY_POLL);
+        ASSERT_NE(source, nullptr);
+
+        segment.unlink();
+        const auto frame = source->poll();
+
+        EXPECT_EQ(source->state(), SourceState::REMOVED);
+        EXPECT_EQ(frame.bytes[3], std::byte{9});
+    }
+
+    TEST(ShmSourceState, TheOldMappingStillSeesTheWriter) {
+        TestSegment segment(4096);
+        ASSERT_TRUE(segment.ready());
+        auto source = openOrFail(segment.name(), EVERY_POLL);
+        ASSERT_NE(source, nullptr);
+        segment.unlink();
+
+        segment.write(10, std::byte{0x5a});
+        const auto frame = source->poll();
+
+        EXPECT_EQ(frame.bytes[10], std::byte{0x5a});
+        EXPECT_EQ(frame.heat[10], HEAT_MAX);
+    }
+
+    TEST(ShmSourceState, ARecreatedNameIsReplaced) {
+        TestSegment segment(4096);
+        ASSERT_TRUE(segment.ready());
+        auto source = openOrFail(segment.name(), EVERY_POLL);
+        ASSERT_NE(source, nullptr);
+
+        segment.unlink();
+        const TestSegment again(segment.name(), 4096);
+        ASSERT_TRUE(again.ready());
+        static_cast<void>(source->poll());
+
+        EXPECT_EQ(source->state(), SourceState::REPLACED);
+    }
+
+    TEST(ShmSourceState, RemovedThenRecreatedIsReplaced) {
+        TestSegment segment(4096);
+        ASSERT_TRUE(segment.ready());
+        auto source = openOrFail(segment.name(), EVERY_POLL);
+        ASSERT_NE(source, nullptr);
+
+        segment.unlink();
+        static_cast<void>(source->poll());
+        ASSERT_EQ(source->state(), SourceState::REMOVED);
+
+        const TestSegment again(segment.name(), 4096);
+        ASSERT_TRUE(again.ready());
+        static_cast<void>(source->poll());
+
+        EXPECT_EQ(source->state(), SourceState::REPLACED);
+    }
+
+    TEST(ShmSourceState, AFreshOpenOfTheNewObjectIsLive) {
+        TestSegment segment(4096);
+        ASSERT_TRUE(segment.ready());
+        segment.unlink();
+        const TestSegment again(segment.name(), 4096);
+        ASSERT_TRUE(again.ready());
+
+        auto source = openOrFail(again.name(), EVERY_POLL);
+        ASSERT_NE(source, nullptr);
+        static_cast<void>(source->poll());
+
+        EXPECT_EQ(source->state(), SourceState::LIVE);
+    }
+
+    TEST(ShmSourceState, TheNameIsOnlyCheckedOnItsInterval) {
+        TestSegment segment(4096);
+        ASSERT_TRUE(segment.ready());
+        auto source = openOrFail(
+            segment.name(),
+            shmscope::ShmOptions{.checkEvery = std::chrono::hours(1)});
+        ASSERT_NE(source, nullptr);
+
+        segment.unlink();
+        static_cast<void>(source->poll());
+
+        EXPECT_EQ(source->state(), SourceState::LIVE);
+    }
+
+    TEST(ShmSourceResize, ShrinkingIsFollowed) {
+        if (!canResize()) GTEST_SKIP() << "this platform cannot resize";
+        TestSegment segment(65536);
+        ASSERT_TRUE(segment.ready());
+        auto source = openOrFail(segment.name(), EVERY_POLL);
+        ASSERT_NE(source, nullptr);
+
+        ASSERT_TRUE(segment.resize(16384));
+        segment.write(100, std::byte{3});
+        const auto frame = source->poll();
+
+        EXPECT_EQ(frame.bytes.size(), 16384U);
+        EXPECT_EQ(frame.heat.size(), 16384U);
+        EXPECT_EQ(frame.bytes[100], std::byte{3});
+    }
+
+    TEST(ShmSourceResize, GrowingIsFollowed) {
+        if (!canResize()) GTEST_SKIP() << "this platform cannot resize";
+        TestSegment segment(16384);
+        ASSERT_TRUE(segment.ready());
+        auto source = openOrFail(segment.name(), EVERY_POLL);
+        ASSERT_NE(source, nullptr);
+
+        ASSERT_TRUE(segment.resize(65536));
+        segment.write(60000, std::byte{8});
+        const auto frame = source->poll();
+
+        EXPECT_EQ(frame.bytes.size(), 65536U);
+        EXPECT_EQ(frame.bytes[60000], std::byte{8});
+    }
+
+    TEST(ShmSourceResize, AResizeStartsCold) {
+        if (!canResize()) GTEST_SKIP() << "this platform cannot resize";
+        TestSegment segment(16384);
+        ASSERT_TRUE(segment.ready());
+        auto source = openOrFail(segment.name(), EVERY_POLL);
+        ASSERT_NE(source, nullptr);
+
+        ASSERT_TRUE(segment.resize(32768));
+        segment.write(5, std::byte{1});
+        const auto frame = source->poll();
+
+        for (const auto heat : frame.heat) EXPECT_EQ(heat, 0);
+    }
+
+    TEST(ShmSourceResize, ShrinkingToNothingGivesAnEmptyFrame) {
+        if (!canResize()) GTEST_SKIP() << "this platform cannot resize";
+        TestSegment segment(16384);
+        ASSERT_TRUE(segment.ready());
+        auto source = openOrFail(segment.name(), EVERY_POLL);
+        ASSERT_NE(source, nullptr);
+
+        ASSERT_TRUE(segment.resize(0));
+        const auto frame = source->poll();
+
+        EXPECT_TRUE(frame.bytes.empty());
+        EXPECT_TRUE(frame.heat.empty());
+
+        ASSERT_TRUE(segment.resize(16384));
+        segment.write(1, std::byte{2});
+        EXPECT_EQ(source->poll().bytes[1], std::byte{2});
+    }
+
+    TEST(ShmSourceResize, ManyResizesNeverCrash) {
+        if (!canResize()) GTEST_SKIP() << "this platform cannot resize";
+        TestSegment segment(65536);
+        ASSERT_TRUE(segment.ready());
+        auto source = openOrFail(segment.name(), EVERY_POLL);
+        ASSERT_NE(source, nullptr);
+
+        for (std::size_t i = 0; i < 50; ++i) {
+            ASSERT_TRUE(segment.resize(i % 2 == 0 ? 4096 : 65536));
+            const auto frame = source->poll();
+            EXPECT_EQ(frame.bytes.size(), i % 2 == 0 ? 4096U : 65536U);
+        }
+    }
+
+    TEST(ShmSourceResize, MacOsCannotResize) {
+#ifdef __APPLE__
+        EXPECT_FALSE(canResize());
+#else
+        GTEST_SKIP() << "only meaningful on macOS";
+#endif
     }
 
 }  // namespace
