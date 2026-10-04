@@ -13,8 +13,18 @@ Give it a layout file and the bytes read as fields instead of hex.
 
 ## Install
 
-macOS only for now. Build it from source, you need CMake 4.2, a C++23
-compiler and [uv](https://docs.astral.sh/uv/) for Conan.
+macOS on Apple Silicon for now.
+
+```
+brew tap Ayush272002/tap
+brew trust --formula ayush272002/tap/shmscope
+brew install shmscope
+```
+
+### From source
+
+You need CMake 4.2, a C++23 compiler and [uv](https://docs.astral.sh/uv/) for
+Conan.
 
 ```
 uv sync
@@ -26,7 +36,8 @@ The binary ends up in `cmake-build-release/shmscope`.
 
 ## Try it
 
-The repo has a small writer that fills a ring buffer:
+The repo has a small writer that fills a ring buffer, build from source to
+get it:
 
 ```
 ./cmake-build-release/ring_writer &
