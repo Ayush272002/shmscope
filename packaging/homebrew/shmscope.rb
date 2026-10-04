@@ -1,13 +1,20 @@
+# Copyright 2026 Ayush Acharjya
+# SPDX-License-Identifier: Apache-2.0
+
 class Shmscope < Formula
   desc "Live terminal viewer for POSIX shared memory"
   homepage "https://github.com/Ayush272002/shmscope"
   url "https://github.com/Ayush272002/shmscope/releases/download/v0.0.0/shmscope-v0.0.0-macos-arm64.tar.gz"
-  version "0.0.0"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   license "Apache-2.0"
 
+  livecheck do
+    url :stable
+    strategy :github_latest
+  end
+
   depends_on arch: :arm64
-  depends_on :macos
+  depends_on macos: :sonoma
 
   def install
     bin.install "bin/shmscope"

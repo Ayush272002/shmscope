@@ -99,9 +99,10 @@ jobs:
             --title "v${{ steps.bump.outputs.version }}" \
             --generate-notes
 
-      - name: Update the Homebrew tap
+      - name: Open a Homebrew tap PR
         env:
           TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           VERSION: ${{ steps.bump.outputs.version }}
           NAME: ${{ steps.package.outputs.name }}
           SHA: ${{ steps.package.outputs.sha256 }}
@@ -112,13 +113,21 @@ jobs:
           mkdir -p tap/Formula
           sed -E \
             -e "s|^  url \".*\"|  url \"${URL}\"|" \
-            -e "s|^  version \".*\"|  version \"${VERSION}\"|" \
             -e "s|^  sha256 \".*\"|  sha256 \"${SHA}\"|" \
             packaging/homebrew/shmscope.rb > tap/Formula/shmscope.rb
 
           cd tap
+          BRANCH="shmscope-${VERSION}"
+          git switch -c "$BRANCH"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/shmscope.rb
           git commit -m "shmscope ${VERSION}"
-          git push origin HEAD:main
+          git push origin "$BRANCH"
+
+          gh pr create \
+            --repo Ayush272002/homebrew-tap \
+            --base main \
+            --head "$BRANCH" \
+            --title "shmscope ${VERSION}" \
+            --body "Release: https://github.com/${{ github.repository }}/releases/tag/v${VERSION}"
