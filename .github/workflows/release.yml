@@ -131,3 +131,8 @@ jobs:
             --head "$BRANCH" \
             --title "shmscope ${VERSION}" \
             --body "Release: https://github.com/${{ github.repository }}/releases/tag/v${VERSION}"
+
+          gh pr merge "$BRANCH" \
+            --repo Ayush272002/homebrew-tap \
+            --auto \
+            --rebase
