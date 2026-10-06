@@ -186,3 +186,10 @@ jobs:
             git revert --no-edit HEAD
             git push origin HEAD:main
           fi
+
+  docs:
+    needs: release
+    permissions:
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/docs.yml

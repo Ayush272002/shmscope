@@ -1,0 +1,71 @@
+site_name: shmscope
+site_description: A live terminal viewer for POSIX shared memory.
+repo_url: https://github.com/Ayush272002/shmscope
+repo_name: Ayush272002/shmscope
+
+exclude_docs: |
+  hooks/
+
+hooks:
+  - docs/hooks/manpage.py
+
+extra:
+  generator: false
+
+extra_javascript:
+  - javascripts/home.js
+
+extra_css:
+  - stylesheets/theme.css
+  - stylesheets/manual.css
+
+theme:
+  name: material
+  font:
+    text: Inter
+    code: JetBrains Mono
+  logo: assets/logo.svg
+  favicon: assets/logo.svg
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.footer
+    - navigation.top
+    - toc.follow
+    - search.highlight
+    - content.code.copy
+
+markdown_extensions:
+  - toc:
+      permalink: true
+  - admonition
+  - def_list
+  - tables
+  - attr_list
+  - md_in_html
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - Home: index.md
+  - Layouts: layouts.md
+  - Manual: shmscope.1.md
