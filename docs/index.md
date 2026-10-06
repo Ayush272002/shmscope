@@ -1,3 +1,10 @@
+---
+description: >-
+  shmscope is a live terminal viewer for POSIX shared memory on macOS. Watch a
+  segment's bytes change as the writer runs and decode them with Kaitai Struct
+  layouts. Install with Homebrew.
+---
+
 # shmscope { .visually-hidden }
 
 ![shmscope](banner.svg){ width="760" }
