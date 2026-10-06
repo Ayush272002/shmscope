@@ -9,8 +9,11 @@ from conan.tools.files import load
 class ShmscopeConan(ConanFile):
     name = "shmscope"
     description = "Live terminal viewer for POSIX shared memory."
+    license = "Apache-2.0"
     author = "Ayush Acharjya <ayushacharjya@gmail.com>"
-    topics = ("cpp", "shared-memory", "tui", "debugging")
+    homepage = "https://shmscope.ayushacharjya.com/"
+    url = "https://github.com/Ayush272002/shmscope"
+    topics = ("cpp", "shared-memory", "posix", "tui", "terminal", "hex-viewer", "kaitai", "debugging")
 
     settings = "os", "compiler", "build_type", "arch"
 
