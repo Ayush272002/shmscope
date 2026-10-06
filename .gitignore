@@ -1049,4 +1049,7 @@ dkms.conf
 # Conan-generated, per-machine
 CMakeUserPresets.json
 
+# MkDocs output
+site/
+
 IDEA.md
