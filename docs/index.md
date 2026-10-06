@@ -47,8 +47,7 @@ Then type `/field latest.body` to follow the newest record.
 ## Next
 
 - [Layouts](layouts.md) covers the `.ksy` subset and display formats.
-- The [manual](shmscope.1.md) lists every option, key and command. It is the
-  same page you get from `man shmscope`.
+- The [manual](manual.md) lists every option, key and command.
 
 !!! warning "Reads are not synchronised"
     The mapping is read only and shmscope never writes. Reads aren't
