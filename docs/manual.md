@@ -1,3 +1,9 @@
+---
+description: >-
+  shmscope command-line reference: options, keyboard shortcuts, slash
+  commands, layout support, files and environment variables.
+---
+
 # shmscope
 
 Live terminal viewer for POSIX shared memory.

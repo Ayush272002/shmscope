@@ -13,6 +13,7 @@ def on_config(config):
     path = Path(config.config_file_path).parent / "VERSION"
     version = path.read_text().strip() if path.exists() else ""
     repo = (config.repo_url or "").rstrip("/")
+    config.extra["version"] = version
     return config
 
 

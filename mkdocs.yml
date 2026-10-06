@@ -1,17 +1,24 @@
 site_name: shmscope
-site_description: A live terminal viewer for POSIX shared memory.
+site_description: >-
+  shmscope is a live terminal viewer for POSIX shared memory. Watch a
+  segment's bytes change as the writer runs, and decode them into fields with
+  Kaitai Struct layouts.
+site_author: Ayush Acharjya
 site_url: https://shmscope.ayushacharjya.com/
 repo_url: https://github.com/Ayush272002/shmscope
 repo_name: Ayush272002/shmscope
 
 exclude_docs: |
   hooks/
+  overrides/
 
 hooks:
   - docs/hooks/manual.py
 
 extra:
   generator: false
+  tagline: Live terminal viewer for POSIX shared memory
+  author_url: https://github.com/Ayush272002
 
 extra_javascript:
   - javascripts/home.js
@@ -22,6 +29,8 @@ extra_css:
 
 theme:
   name: material
+  custom_dir: docs/overrides
+  language: en
   font:
     text: Inter
     code: JetBrains Mono

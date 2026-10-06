@@ -1,3 +1,10 @@
+---
+description: >-
+  Describe shared memory with Kaitai Struct .ksy layouts in shmscope:
+  supported types, instances, arrays, and display formats for fixed-point
+  prices, enums and timestamps.
+---
+
 # Layouts
 
 A layout tells shmscope what the bytes mean. With one loaded, the side pane
