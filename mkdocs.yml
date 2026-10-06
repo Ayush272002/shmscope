@@ -1,5 +1,6 @@
 site_name: shmscope
 site_description: A live terminal viewer for POSIX shared memory.
+site_url: https://shmscope.ayushacharjya.com/
 repo_url: https://github.com/Ayush272002/shmscope
 repo_name: Ayush272002/shmscope
 
@@ -7,7 +8,7 @@ exclude_docs: |
   hooks/
 
 hooks:
-  - docs/hooks/manpage.py
+  - docs/hooks/manual.py
 
 extra:
   generator: false
@@ -68,4 +69,4 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Layouts: layouts.md
-  - Manual: shmscope.1.md
+  - Manual: manual.md

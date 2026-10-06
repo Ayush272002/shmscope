@@ -1,21 +1,15 @@
----
-title: SHMSCOPE
-section: 1
-header: User Commands
-footer: shmscope
----
+# shmscope
 
-# NAME
+Live terminal viewer for POSIX shared memory.
+{ .man-lead }
 
-shmscope - live terminal viewer for POSIX shared memory
+## Synopsis
 
-# SYNOPSIS
+**shmscope** [*name*] [**-l** *file*] [**--hz** *rate*]
 
-**shmscope** [*name*] [**-l** *file*] [**\-\-hz** *rate*]
+**shmscope** **-v** | **--version**
 
-**shmscope** **-v** | **\-\-version**
-
-# DESCRIPTION
+## Description
 
 **shmscope** maps a POSIX shared memory object read only and shows its bytes
 in the terminal, refreshing while the writer runs. Changed bytes are
@@ -25,54 +19,54 @@ With a layout file the bytes are decoded into named fields shown beside the
 hex. Without a *name*, **shmscope** opens a launcher listing recently opened
 segments.
 
-# OPTIONS
+## Options
 
 *name*
 :   The shared memory object to open, for example */shmscope-demo*.
 
-**-l**, **\-\-layout** *file*
+**-l**, **--layout** *file*
 :   Load a layout file (*.ksy*, *.yaml* or *.json*) and overlay it on the
     bytes. The file must exist.
 
-**\-\-hz** *rate*
+**--hz** *rate*
 :   Refresh rate in updates per second, from 1 to 60. The default is 15.
 
-**-v**, **\-\-version**
+**-v**, **--version**
 :   Print the version and exit.
 
-**-h**, **\-\-help**
+**-h**, **--help**
 :   Print a usage summary and exit.
 
-# KEYS
+## Keys
 
-**Up**, **Down**, **Left**, **Right**
+<kbd>Up</kbd>, <kbd>Down</kbd>, <kbd>Left</kbd>, <kbd>Right</kbd>
 :   Move the cursor.
 
-**PgUp**, **PgDn**
+<kbd>PgUp</kbd>, <kbd>PgDn</kbd>
 :   Move one page.
 
-**Home**, **End**
+<kbd>Home</kbd>, <kbd>End</kbd>
 :   Go to the first or last row.
 
-**Space**
+<kbd>Space</kbd>
 :   Freeze or resume live updates.
 
-**f**
+<kbd>f</kbd>
 :   Follow the writer.
 
-**i**
+<kbd>i</kbd>
 :   Switch between the fields pane and the inspector. Needs a layout.
 
-**/**
-:   Open the command bar. **Tab** completes commands and file paths.
+<kbd>/</kbd>
+:   Open the command bar. <kbd>Tab</kbd> completes commands and file paths.
 
-**q**, **Esc**
+<kbd>q</kbd>, <kbd>Esc</kbd>
 :   Go back, or quit from the launcher.
 
-The mouse wheel scrolls whichever pane it is over. Hold **Option** to select
-text.
+The mouse wheel scrolls whichever pane it is over. Hold <kbd>Option</kbd> to
+select text.
 
-# COMMANDS
+## Commands
 
 Commands are typed after **/**. Only the commands that apply right now are
 offered.
@@ -110,23 +104,25 @@ offered.
 **/close**
 :   Go back to the launcher.
 
-# LAYOUTS
+## Layouts
 
-Layouts are Kaitai Struct *.ksy* files in YAML or JSON. **shmscope** reads a
-subset: little endian, integers, floats, **str**, **contents**, nested types,
-**instances** with **pos**, **repeat: expr** and **switch-on**.
+Layouts are Kaitai Struct *.ksy* files in YAML or JSON. shmscope reads a
+subset: little endian, integers, floats, `str`, `contents`, nested types,
+`instances` with `pos`, `repeat: expr` and `switch-on`.
 
-Display formats are a **shmscope** extension, declared under
-**-shmscope-formats** and attached with **-shmscope-format**. Kinds are
-**decimal**, **hex**, **scaled**, **enum** and **timestamp**.
+Display formats are a shmscope extension, declared under `-shmscope-formats`
+and attached with `-shmscope-format`. Kinds are `decimal`, `hex`, `scaled`,
+`enum` and `timestamp`.
 
-# FILES
+The [layout guide](layouts.md) covers each feature with examples.
+
+## Files
 
 *$XDG_STATE_HOME/shmscope/recent*
 :   Recently opened segments, shown in the launcher. Falls back to
     *~/.local/state/shmscope/recent* when **XDG_STATE_HOME** is unset.
 
-# ENVIRONMENT
+## Environment
 
 **XDG_STATE_HOME**
 :   Where the recent list is kept.
@@ -134,16 +130,17 @@ Display formats are a **shmscope** extension, declared under
 **HOME**
 :   Used for the fallback state directory and to expand *~* in paths.
 
-# NOTES
+## Notes
 
-The mapping is read only and **shmscope** never writes to it.
+!!! warning ""
+    The mapping is read only and **shmscope** never writes to it.
 
-Reads are not synchronised with the writer, so a value can tear mid write.
+    Reads are not synchronised with the writer, so a value can tear mid write.
 
-If the writer removes or recreates the segment, the title says so and
-**/reopen** picks up the new one.
+    If the writer removes or recreates the segment, the title says so and
+    **/reopen** picks up the new one.
 
-# EXAMPLES
+## Examples
 
 Open a segment with a layout:
 
@@ -163,8 +160,7 @@ Open the launcher:
 shmscope
 ```
 
-# SEE ALSO
+## See also
 
-**shm_open**(3), **mmap**(2)
-
-Project site: <https://github.com/Ayush272002/shmscope>
+[`shm_open(3)`](https://man7.org/linux/man-pages/man3/shm_open.3.html),
+[`mmap(2)`](https://man7.org/linux/man-pages/man2/mmap.2.html)

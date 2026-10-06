@@ -11,6 +11,8 @@ the bytes change while the writer runs.
 
 Give it a layout file and the bytes read as fields instead of hex.
 
+Full docs: [shmscope.ayushacharjya.com](https://shmscope.ayushacharjya.com/)
+
 ## Install
 
 macOS on Apple Silicon for now.
