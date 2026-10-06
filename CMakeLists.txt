@@ -4,7 +4,11 @@ set(CMAKE_PROJECT_TOP_LEVEL_INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/cmake/conan.cma
 
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" SHMSCOPE_VERSION)
 
-project(shmscope VERSION ${SHMSCOPE_VERSION} LANGUAGES C CXX)
+project(shmscope
+    VERSION ${SHMSCOPE_VERSION}
+    DESCRIPTION "Live terminal viewer for POSIX shared memory."
+    HOMEPAGE_URL "https://shmscope.ayushacharjya.com/"
+    LANGUAGES C CXX)
 
 foreach(_shm_language C CXX)
     if(NOT CMAKE_${_shm_language}_COMPILER_ID MATCHES "Clang")

@@ -24,8 +24,7 @@ Examples:
   shmscope -l examples/ring.ksy /shmscope-demo  decode it with a layout
   shmscope --hz 60 /shmscope-demo               refresh 60 times a second
 
-Docs: https://shmscope.ayushacharjya.com/
-)";
+Docs: )" SHMSCOPE_HOMEPAGE_URL "\n";
 
     class HelpFormatter : public CLI::Formatter {
     public:
@@ -38,7 +37,7 @@ Docs: https://shmscope.ayushacharjya.com/
 }  // namespace
 
 int main(const int argc, char** argv) {
-    CLI::App cli{"Live terminal viewer for POSIX shared memory.", "shmscope"};
+    CLI::App cli{SHMSCOPE_DESCRIPTION, "shmscope"};
     cli.set_version_flag("-v,--version", SHMSCOPE_VERSION);
     auto formatter = std::make_shared<HelpFormatter>();
     formatter->column_width(26);
